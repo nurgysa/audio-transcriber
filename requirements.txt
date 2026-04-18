@@ -1,0 +1,12 @@
+faster-whisper==1.2.1
+ctranslate2==4.7.1
+torch==2.11.0+cu126
+torchaudio==2.11.0+cu126
+pyannote.audio==4.0.4
+speechbrain==1.1.0
+pytorch-lightning==2.6.1
+customtkinter==5.2.2
+soundfile==0.13.1
+sounddevice==0.5.5
+scipy==1.15.3
+numpy==2.2.6

@@ -1,0 +1,9 @@
+{
+  "hf_token": "",
+  "hotwords": [],
+  "voices": [],
+  "language": "Авто-определение",
+  "model": "large-v3 (максимум)",
+  "speaker_count": "Авто",
+  "normalize_audio": true
+}
