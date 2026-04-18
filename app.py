@@ -1073,8 +1073,8 @@ class App(ctk.CTk):
         btn_frame.grid(row=7, column=0, padx=16, pady=(0, 14), sticky="ew")
 
         self._btn_save = self._tonal_btn(
-            btn_frame, text="Сохранить TXT", command=self._save_txt,
-            width=150, state="disabled",
+            btn_frame, text="Сохранить (TXT/SRT/VTT)", command=self._save_txt,
+            width=200, state="disabled",
         )
         self._btn_save.grid(row=0, column=0, padx=(0, 8), pady=4)
 
@@ -1466,11 +1466,38 @@ class App(ctk.CTk):
             title="Сохранить транскрипцию",
             defaultextension=".txt",
             initialfile=os.path.basename(default_path),
-            filetypes=[("Text files", "*.txt")],
+            filetypes=[
+                ("Text files", "*.txt"),
+                ("SubRip subtitles", "*.srt"),
+                ("WebVTT subtitles", "*.vtt"),
+            ],
         )
-        if path:
+        if not path:
+            return
+
+        # SRT/VTT need per-segment timestamps from the last transcription.
+        # If the user picks a subtitle format but we don't have segments
+        # (e.g. they typed text into the box manually), fall back to plain
+        # text and warn — a silent .srt with one giant cue would be useless.
+        ext = os.path.splitext(path)[1].lower()
+        segments = self._transcriber.last_segments if self._transcriber else None
+        if ext in (".srt", ".vtt"):
+            if not segments:
+                messagebox.showwarning(
+                    "Нет таймкодов",
+                    "Для экспорта в SRT/VTT нужна свежая транскрипция —\n"
+                    "запустите её заново.",
+                )
+                return
+            from transcript_format import format_srt, format_vtt
+            payload = format_srt(segments) if ext == ".srt" else format_vtt(segments)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(payload)
+        else:
             save_transcript(text, path)
-            self._lbl_status.configure(text=f"Сохранено: {os.path.basename(path)}", text_color=TEXT_SECONDARY)
+        self._lbl_status.configure(
+            text=f"Сохранено: {os.path.basename(path)}", text_color=TEXT_SECONDARY,
+        )
 
     def _copy_text(self):
         text = self._textbox.get("1.0", "end").strip()

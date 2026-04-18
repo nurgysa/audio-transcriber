@@ -14,6 +14,7 @@ from faster_whisper import WhisperModel
 
 from audio_io import ensure_wav, get_duration_s, split_wav_into_chunks
 from logging_setup import crash_log_path, get_logger
+from transcript_format import format_diarized, format_timed
 
 logger = get_logger(__name__)
 
@@ -165,6 +166,10 @@ class Transcriber:
         self._beam_size = beam_size
         self._model = None
         self._on_cpu = False   # True if Whisper weights are offloaded to CPU memory
+        # Last transcription's per-segment results, for callers that want
+        # subtitle exports (SRT/VTT). List of {start, end, text, speaker?}.
+        # None until transcribe() runs at least once.
+        self.last_segments: list[dict] | None = None
 
     @property
     def model_size(self) -> str:
@@ -620,7 +625,14 @@ class Transcriber:
             if not diarize:
                 if on_progress:
                     on_progress(100.0)
-                return _format_timed(transcript_segments)
+                # Strip the heavy ``words`` payload before exposing — the
+                # subtitle formatters only need start/end/text. Keeps the
+                # public segments shape consistent across diarize/no-diarize.
+                self.last_segments = [
+                    {"start": s["start"], "end": s["end"], "text": s["text"]}
+                    for s in transcript_segments
+                ]
+                return format_timed(transcript_segments)
 
             # --- Diarization ---
             # Move Whisper weights from GPU VRAM to CPU memory so the
@@ -668,7 +680,8 @@ class Transcriber:
             if on_progress:
                 on_progress(100.0)
 
-            return _format_diarized(labeled)
+            self.last_segments = labeled
+            return format_diarized(labeled)
         finally:
             if wav_is_temp:
                 try:
@@ -809,63 +822,3 @@ def _find_speaker_by_overlap(
     return nearest
 
 
-def _fmt_time(seconds: float) -> str:
-    """Format seconds as [MM:SS] or [H:MM:SS] for timestamps."""
-    total = int(seconds)
-    h, remainder = divmod(total, 3600)
-    m, s = divmod(remainder, 60)
-    if h > 0:
-        return f"[{h}:{m:02d}:{s:02d}]"
-    return f"[{m:02d}:{s:02d}]"
-
-
-def _format_timed(segments: list[dict]) -> str:
-    """Format transcript segments with timestamps (no diarization)."""
-    if not segments:
-        return ""
-    lines = []
-    for seg in segments:
-        lines.append(f"{_fmt_time(seg['start'])} {seg['text']}")
-    return "\n".join(lines)
-
-
-def _format_diarized(segments: list[dict]) -> str:
-    """Format segments with speaker labels, merging consecutive same-speaker segments."""
-    if not segments:
-        return ""
-
-    # Rename auto-labels (SPEAKER_XX) to friendly numbers ("Спикер 1"...).
-    # Labels that don't match the pyannote default prefix are assumed to be
-    # enrolled real names (from the voice library) and kept verbatim — we
-    # don't want "Нургиса" to become "Спикер 1".
-    speaker_map: dict[str, str] = {}
-    counter = 1
-
-    lines = []
-    prev_speaker = None
-    current_texts = []
-    block_start = 0.0
-
-    for seg in segments:
-        raw = seg["speaker"]
-        if raw not in speaker_map:
-            if str(raw).startswith("SPEAKER_"):
-                speaker_map[raw] = f"Спикер {counter}"
-                counter += 1
-            else:
-                speaker_map[raw] = str(raw)
-        speaker = speaker_map[raw]
-
-        if speaker == prev_speaker:
-            current_texts.append(seg["text"])
-        else:
-            if current_texts and prev_speaker:
-                lines.append(f"{_fmt_time(block_start)} [{prev_speaker}]: {' '.join(current_texts)}")
-            current_texts = [seg["text"]]
-            block_start = seg["start"]
-            prev_speaker = speaker
-
-    if current_texts and prev_speaker:
-        lines.append(f"{_fmt_time(block_start)} [{prev_speaker}]: {' '.join(current_texts)}")
-
-    return "\n\n".join(lines)
