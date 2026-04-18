@@ -23,7 +23,7 @@ from theme import (
     BG, BLUE, BLUE_DIM, BLUE_SURFACE, BORDER, FONT, GREEN, INPUT_BG,
     PROGRESS_BG, RED, SURFACE, SURFACE_BRIGHT, TEXT_PRIMARY, TEXT_SECONDARY,
 )
-from transcriber import Transcriber
+from transcriber import Transcriber, TranscriptionCancelled
 from utils import (
     check_ffmpeg, create_history_entry, delete_history_entry,
     get_output_path, list_history_entries, load_config,
@@ -787,6 +787,10 @@ class App(ctk.CTk):
         self._is_running = False
         self._rec_timer_id: str | None = None
         self._config = load_config()
+        # Cancel signal for the worker thread. Worker checks this between
+        # segments and around the diarization subprocess; setting it
+        # interrupts the run within ~250 ms.
+        self._cancel_event = threading.Event()
 
         self._build_ui()
 
@@ -1250,11 +1254,26 @@ class App(ctk.CTk):
         self._is_running = running
         state = "disabled" if running else "normal"
         self._btn_file.configure(state=state)
-        self._btn_transcribe.configure(state=state if self._audio_path else "disabled")
         self._lang_menu.configure(state=state)
         self._model_menu.configure(state=state)
         self._diar_check.configure(state=state)
         self._normalize_check.configure(state=state)
+        # The transcribe button doubles as cancel: enabled in both states.
+        # When running, swaps to a red "Отмена" with _request_cancel command;
+        # when idle, returns to the standard blue primary look.
+        if running:
+            self._btn_transcribe.configure(
+                state="normal", text="Отмена",
+                command=self._request_cancel,
+                fg_color="#D93025", hover_color="#B3261E",
+            )
+        else:
+            self._btn_transcribe.configure(
+                state="normal" if self._audio_path else "disabled",
+                text="Транскрибировать",
+                command=self._start_transcription,
+                fg_color=BLUE, hover_color=BLUE_DIM,
+            )
         if not running and self._diar_var.get():
             self._hf_token_entry.configure(state="normal")
             self._btn_paste.configure(state="normal")
@@ -1264,10 +1283,28 @@ class App(ctk.CTk):
             self._btn_paste.configure(state="disabled")
             self._spk_count_menu.configure(state="disabled")
 
+    def _request_cancel(self):
+        """Set the cancel event and disable the button until the worker exits.
+
+        We don't ``join`` the worker here — that would freeze the GUI. The
+        worker thread sees the event within ~250 ms (its polling tick on
+        the diarization subprocess, or the next segment boundary during
+        Whisper inference), raises TranscriptionCancelled, and reaches
+        ``_on_cancelled`` via ``after(0, ...)``.
+        """
+        if not self._is_running:
+            return
+        self._cancel_event.set()
+        self._btn_transcribe.configure(state="disabled", text="Отмена...")
+        self._lbl_status.configure(text="Отмена...", text_color=RED)
+
     def _start_transcription(self):
         if self._is_running or not self._audio_path:
             return
 
+        # Reset cancel signal before each run; otherwise a Cancel from the
+        # previous run would short-circuit the new one immediately.
+        self._cancel_event.clear()
         self._set_running(True)
         self._textbox.delete("1.0", "end")
         self._btn_save.configure(state="disabled")
@@ -1395,8 +1432,12 @@ class App(ctk.CTk):
                 normalize_audio=normalize_audio,
                 on_progress=self._on_progress,
                 on_status=self._on_status,
+                cancel_event=self._cancel_event,
             )
             self.after(0, self._on_complete, text)
+        except TranscriptionCancelled:
+            logger.info("transcription cancelled by user")
+            self.after(0, self._on_cancelled)
         except Exception as e:
             # logger.exception writes the full traceback to logs/app.log
             # via the rotating handler. We additionally drop a structured
@@ -1455,6 +1496,13 @@ class App(ctk.CTk):
         self._progress.configure(mode="determinate", progress_color=BLUE)
         self._progress.set(0)
         messagebox.showerror("Ошибка транскрипции", error_msg)
+        self._set_running(False)
+
+    def _on_cancelled(self):
+        self._lbl_status.configure(text="Отменено", text_color=TEXT_SECONDARY)
+        self._progress.stop()
+        self._progress.configure(mode="determinate", progress_color=BLUE)
+        self._progress.set(0)
         self._set_running(False)
 
     def _save_txt(self):

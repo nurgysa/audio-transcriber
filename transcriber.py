@@ -19,6 +19,21 @@ from transcript_format import format_diarized, format_timed
 logger = get_logger(__name__)
 
 
+class TranscriptionCancelled(Exception):
+    """Raised inside ``Transcriber.transcribe`` when the cancel event fires.
+
+    Caught in ``app._run_transcription`` and routed to a "cancelled" UI
+    state distinct from the "error" path — the user asked to stop, so
+    we don't show a scary error dialog.
+    """
+
+
+def _check_cancelled(cancel_event) -> None:
+    """Helper: raise ``TranscriptionCancelled`` if the event is set."""
+    if cancel_event is not None and cancel_event.is_set():
+        raise TranscriptionCancelled()
+
+
 # Files longer than this are split into chunks before transcription. The
 # threshold is set just below the empirically-observed failure point of the
 # numpy contiguous-allocation bug in faster_whisper's full-file STFT
@@ -302,6 +317,7 @@ class Transcriber:
         voice_lib_path: str | None = None,
         on_progress=None,
         on_status=None,
+        cancel_event=None,
     ) -> list[tuple[float, float, str]]:
         """
         Run diarization in an isolated Python subprocess.
@@ -388,12 +404,29 @@ class Transcriber:
         t_out.start()
         t_err.start()
 
-        try:
-            proc.wait(timeout=3600)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            raise
+        # Poll for completion in 0.25s ticks instead of one big wait, so a
+        # cancel_event set from the GUI thread is acted on within ~250 ms
+        # instead of after the diarization subprocess finishes (which on a
+        # 60-min file can be 5+ minutes). On cancel we kill the subprocess
+        # and raise TranscriptionCancelled — the OS reclaims its CUDA context.
+        deadline = 3600.0
+        elapsed = 0.0
+        while True:
+            try:
+                proc.wait(timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed += 0.25
+                if cancel_event is not None and cancel_event.is_set():
+                    proc.kill()
+                    proc.wait()
+                    t_out.join()
+                    t_err.join()
+                    raise TranscriptionCancelled()
+                if elapsed >= deadline:
+                    proc.kill()
+                    proc.wait()
+                    raise
 
         t_out.join()
         t_err.join()
@@ -438,6 +471,7 @@ class Transcriber:
         normalize_audio: bool = True,
         on_progress=None,
         on_status=None,
+        cancel_event=None,
     ) -> str:
         """
         Transcribe an audio file and return the full text.
@@ -498,11 +532,13 @@ class Transcriber:
         wav_path, wav_is_temp = ensure_wav(audio_path, normalize=normalize_audio)
         chunks_dir = None
         try:
+            _check_cancelled(cancel_event)
             # Now safe to load Whisper — ffmpeg has already done any DLL
             # initialization it needs and exited.
             if on_status:
                 on_status("Загрузка модели...")
             self.load_model()
+            _check_cancelled(cancel_event)
             if on_status:
                 on_status("Транскрипция...")
 
@@ -584,6 +620,11 @@ class Transcriber:
                 )
 
                 for segment in segments:
+                    # Cancel checkpoint inside the hot loop. On a 90-minute
+                    # file this fires several thousand times — a single
+                    # is_set() call is sub-microsecond, so the overhead is
+                    # invisible compared to per-segment Whisper inference.
+                    _check_cancelled(cancel_event)
                     abs_start = segment.start + chunk_start_abs
                     abs_end = segment.end + chunk_start_abs
                     # Dedup overlap zone. A chunk (N>0) begins _CHUNK_OVERLAP_S
@@ -663,6 +704,7 @@ class Transcriber:
             # within the 70-90% range; on_status surfaces worker lifecycle
             # messages so the GUI has text feedback during dead zones.
             logger.debug("phase=before_subprocess_start")
+            _check_cancelled(cancel_event)
             speaker_turns = self._run_diarization_subprocess(
                 wav_path, hf_token,
                 num_speakers=num_speakers,
@@ -670,6 +712,7 @@ class Transcriber:
                 max_speakers=max_speakers,
                 voice_lib_path=voice_lib_path,
                 on_progress=on_progress, on_status=on_status,
+                cancel_event=cancel_event,
             )
 
             if on_progress:
