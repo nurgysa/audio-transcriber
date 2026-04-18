@@ -287,6 +287,10 @@ class VoicesDialog(ctk.CTkToplevel):
         recorder = self._voice_recorder
         if recorder is None:
             return
+        # Capture elapsed BEFORE stop(): Recorder.elapsed returns 0.0 once
+        # _is_recording flips to False, so reading it after stop() would
+        # underreport every recording as zero seconds.
+        elapsed = recorder.elapsed
         try:
             wav_path = recorder.stop()
         except Exception as e:
@@ -302,7 +306,6 @@ class VoicesDialog(ctk.CTkToplevel):
             self._cleanup_recording(delete_file=True)
             return
 
-        elapsed = recorder.elapsed
         # Require at least 5 seconds of speech. Under 5 s the embedding is
         # noisy enough that matching accuracy drops sharply — no point
         # saving it and discovering that later.
