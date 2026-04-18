@@ -1,4 +1,3 @@
-import gc
 import json
 import os
 import subprocess
@@ -14,6 +13,9 @@ import tempfile
 from faster_whisper import WhisperModel
 
 from audio_io import ensure_wav, get_duration_s, split_wav_into_chunks
+from logging_setup import crash_log_path, get_logger
+
+logger = get_logger(__name__)
 
 
 # Files longer than this are split into chunks before transcription. The
@@ -255,62 +257,6 @@ class Transcriber:
         self._model.model.unload_model(to_cpu=True)
         self._on_cpu = True
 
-    def unload_model(self) -> None:
-        """
-        Release the Whisper model and its VRAM back to the system.
-
-        Call this between distinct GPU workloads when the 4 GB card can't
-        hold both the Whisper weights AND a second model (e.g. pyannote's
-        diarization pipeline running in a subprocess). After this call,
-        ``self._model is None`` and the next ``load_model()`` re-instantiates
-        from the on-disk cache (~3-11 s cold start depending on size).
-
-        Safe to call when no model is loaded — it's a no-op in that case.
-
-        WARNING: on Windows + GTX 1650 Ti + Whisper "medium", calling this
-        between Whisper transcription and pyannote diarization triggers a
-        Fatal Python error: Aborted in ctranslate2's native destructor.
-        Verified via faulthandler.log — `del self._model` (line below) is
-        the trigger. The transcribe() flow no longer calls unload_model
-        before the diarization subprocess; it relies on Whisper's ~500 MB
-        residency being acceptable alongside the ~1-2 GB pyannote subprocess.
-
-        Method left in place for the rare case where model size needs to
-        change between calls — load_model() short-circuits if the same
-        model is already loaded, so unloading is required to switch.
-        """
-        if self._model is None:
-            return
-        del self._model
-        self._model = None
-        gc.collect()
-
-    def _phase_log(self, phase: str) -> None:
-        """
-        Append a timestamped phase marker to logs/phase.log and fsync.
-
-        Used to bracket suspected C-level crash points (e.g. unload_model,
-        subprocess.Popen) so the post-mortem can pinpoint exactly which call
-        killed the process. fsync ensures the line hits disk *before* a
-        potential native crash on the next instruction.
-
-        Never raises — diagnostics must not mask the real failure.
-        """
-        try:
-            from datetime import datetime
-            logs_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "logs"
-            )
-            os.makedirs(logs_dir, exist_ok=True)
-            log_path = os.path.join(logs_dir, "phase.log")
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"{ts}\t{phase}\n")
-                f.flush()
-                os.fsync(f.fileno())
-        except Exception:
-            pass
-
     def _write_crash_log(
         self,
         audio_path: str,
@@ -318,38 +264,27 @@ class Transcriber:
         stderr_text: str,
         stdout_text: str,
     ) -> str | None:
-        """
-        Persist a diarization subprocess crash to disk for post-mortem.
+        """Persist a diarization subprocess crash dump for post-mortem.
 
-        Without this, the subprocess's stderr (including any traceback) lives
-        only in the tkinter error dialog shown by app.py — once the user
-        dismisses that dialog, the evidence is gone. Writing to a file gives
-        a durable artifact for debugging and for sharing with a developer.
-
-        Never raises: logging must not mask the original error. Returns the
-        log file path on success, None if logging itself failed.
+        The rotating ``logs/app.log`` carries an indexed reference; the dump
+        file holds the full subprocess stderr/stdout (potentially many KB)
+        that doesn't fit cleanly in a single log line. Returns the dump path
+        or None if writing failed (never raises — diagnostics must not mask
+        the original error).
         """
         try:
-            from datetime import datetime
-            logs_dir = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "logs"
-            )
-            os.makedirs(logs_dir, exist_ok=True)
-            ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            log_path = os.path.join(logs_dir, f"diarize_crash_{ts}.log")
-            with open(log_path, "w", encoding="utf-8") as f:
-                f.write(f"timestamp: {ts}\n")
+            path = crash_log_path("diarize_crash")
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(f"audio_path: {audio_path}\n")
                 f.write(f"exit_code: {exit_code}\n")
                 f.write(f"model: {self._model_size}\n")
-                f.write("=" * 60 + "\n")
-                f.write("STDERR:\n")
+                f.write("=" * 60 + "\nSTDERR:\n")
                 f.write(stderr_text)
-                f.write("\n" + "=" * 60 + "\n")
-                f.write("STDOUT:\n")
+                f.write("\n" + "=" * 60 + "\nSTDOUT:\n")
                 f.write(stdout_text)
-            return log_path
+            return path
         except Exception:
+            logger.exception("failed to write diarize crash dump")
             return None
 
     def _run_diarization_subprocess(
@@ -698,9 +633,9 @@ class Transcriber:
             # pyannote subprocess can't even initialize its CUDA context
             # (verified: logs/diarize_crash_2026-04-14_16-33-25.log shows
             # OOM at the very first torch.cuda.mem_get_info() call).
-            self._phase_log("before_offload_to_cpu")
+            logger.debug("phase=before_offload_to_cpu")
             self.offload_to_cpu()
-            self._phase_log("after_offload_to_cpu")
+            logger.debug("phase=after_offload_to_cpu")
 
             # Progress first, then status: app.py._on_progress overwrites the
             # label on every call, so the status update must come *after* to
@@ -715,7 +650,7 @@ class Transcriber:
             # diarize_worker.py. on_progress advances the bar in real time
             # within the 70-90% range; on_status surfaces worker lifecycle
             # messages so the GUI has text feedback during dead zones.
-            self._phase_log("before_subprocess_start")
+            logger.debug("phase=before_subprocess_start")
             speaker_turns = self._run_diarization_subprocess(
                 wav_path, hf_token,
                 num_speakers=num_speakers,
@@ -747,23 +682,6 @@ class Transcriber:
                     shutil.rmtree(chunks_dir, ignore_errors=True)
                 except Exception:
                     pass
-
-
-def _assign_speakers(
-    segments: list[dict],
-    speaker_turns: list[tuple[float, float, str]],
-) -> list[dict]:
-    """Assign a speaker label to each transcript segment using max overlap.
-
-    Legacy path: used only for segments where Whisper failed to emit
-    word-level timestamps (see _assign_speakers_word_level). Kept because
-    a segment with no words still needs a speaker label for the formatter.
-    """
-    for seg in segments:
-        seg["speaker"] = _find_speaker_by_overlap(
-            seg["start"], seg["end"], speaker_turns,
-        )
-    return segments
 
 
 def _assign_speakers_word_level(

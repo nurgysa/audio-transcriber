@@ -17,6 +17,7 @@ faulthandler.enable(file=_FAULT_LOG, all_threads=True)
 import customtkinter as ctk
 
 from audio_cutter import AudioCutter
+from logging_setup import crash_log_path, get_logger, init_logging
 from recorder import Recorder
 from theme import (
     BG, BLUE, BLUE_DIM, BLUE_SURFACE, BORDER, FONT, GREEN, INPUT_BG,
@@ -28,6 +29,9 @@ from utils import (
     get_output_path, list_history_entries, load_config,
     open_in_explorer, save_config, save_transcript, validate_audio,
 )
+
+init_logging()
+logger = get_logger(__name__)
 
 LANGUAGES = {
     "Авто-определение": None,
@@ -1394,31 +1398,29 @@ class App(ctk.CTk):
             )
             self.after(0, self._on_complete, text)
         except Exception as e:
-            # Capture the full traceback to disk before showing the dialog.
-            # Without this, we only see e's message in the dialog (no callstack)
-            # and cannot pinpoint where in faster-whisper / pyannote / our own
-            # code the failure actually originated. Logging is best-effort.
+            # logger.exception writes the full traceback to logs/app.log
+            # via the rotating handler. We additionally drop a structured
+            # one-shot dump under logs/transcribe_crash_*.log so the user
+            # has a clearly identifiable artifact to share when reporting
+            # the issue — the rotating log can be many KB of unrelated noise.
+            logger.exception(
+                "transcription failed (audio=%s, language=%s, diarize=%s)",
+                audio_path, language, diarize,
+            )
             log_hint = ""
             try:
                 import traceback as _tb
-                from datetime import datetime
-                logs_dir = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)), "logs"
-                )
-                os.makedirs(logs_dir, exist_ok=True)
-                ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                log_path = os.path.join(logs_dir, f"transcribe_crash_{ts}.log")
-                with open(log_path, "w", encoding="utf-8") as f:
-                    f.write(f"timestamp: {ts}\n")
+                path = crash_log_path("transcribe_crash")
+                with open(path, "w", encoding="utf-8") as f:
                     f.write(f"audio_path: {audio_path}\n")
                     f.write(f"language: {language}\n")
                     f.write(f"diarize: {diarize}\n")
                     f.write(f"exception: {type(e).__name__}: {e}\n")
                     f.write("=" * 60 + "\n")
                     _tb.print_exc(file=f)
-                log_hint = f"\n\nПолный лог: {log_path}"
+                log_hint = f"\n\nПолный лог: {path}"
             except Exception:
-                pass
+                logger.exception("failed to write transcribe crash dump")
             self.after(0, self._on_error, f"{e}{log_hint}")
         finally:
             # Clean up the voice library temp file regardless of outcome.
