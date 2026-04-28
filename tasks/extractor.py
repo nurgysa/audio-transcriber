@@ -140,8 +140,8 @@ def parse_and_validate(
         m["id"]: m.get("displayName") or m.get("name") or m["id"]
         for m in members
     }
-    label_ids_set = {l["id"] for l in labels}
-    label_name_by_id = {l["id"]: l["name"] for l in labels}
+    label_ids_set = {lbl["id"] for lbl in labels}
+    label_name_by_id = {lbl["id"]: lbl["name"] for lbl in labels}
 
     tasks: list[Task] = []
     corrections = 0
@@ -263,7 +263,7 @@ def extract(
             model=model, messages=messages, json_mode=True,
         )
     except OpenRouterError as e:
-        if "400" in str(e):
+        if "вернул 400:" in str(e):
             logger.info(
                 "model %s rejected json_mode, retrying without response_format",
                 model,

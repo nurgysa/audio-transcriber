@@ -266,6 +266,26 @@ def test_extract_does_not_retry_on_non_400_error():
     assert openrouter.complete.call_count == 1
 
 
+def test_extract_does_not_retry_on_429_with_400_substring_in_message():
+    """Regression: '400' substring in a 429 Retry-After value must NOT
+    trigger the json_mode-fallback retry. Without this, Retry-After: 1400
+    falsely fires the retry path."""
+    from tasks.openrouter_client import OpenRouterError
+
+    linear = MagicMock()
+    linear.team_context.return_value = {"members": _members(), "labels": _labels()}
+
+    openrouter = MagicMock()
+    openrouter.complete.side_effect = OpenRouterError(
+        "OpenRouter 429 rate-limit (retry after 1400s)",
+    )
+
+    with pytest.raises(OpenRouterError, match="429"):
+        extract(transcript="t", team_id="tid", model="m", lang=None,
+                linear_client=linear, openrouter_client=openrouter)
+    assert openrouter.complete.call_count == 1   # NOT retried
+
+
 def test_extract_attaches_raw_response_to_extraction_error():
     """ExtractionError raised after a successful LLM call must carry the
     raw response so the dialog can display it to the user."""
