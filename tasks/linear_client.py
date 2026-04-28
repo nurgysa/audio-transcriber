@@ -22,6 +22,13 @@ query Viewer {
 }
 """
 
+_BOOTSTRAP_QUERY = """
+query Bootstrap {
+  viewer { id name email }
+  teams { nodes { id name key } }
+}
+"""
+
 
 class LinearError(Exception):
     """All Linear HTTP/GraphQL failures bubble up as this."""
@@ -95,6 +102,23 @@ class LinearClient:
             raise LinearError(f"Linear GraphQL: {msgs}")
 
         return payload.get("data", {})
+
+    def bootstrap(self) -> dict:
+        """Validate + fetch all accessible teams in a single round-trip.
+
+        Returns dict:
+            - viewer: {id, name, email}
+            - teams: list[{id, name, key}]
+
+        Cached by callers in config['linear_teams_cache'] with 24h TTL.
+        """
+        data = self._graphql(_BOOTSTRAP_QUERY)
+        viewer = data.get("viewer")
+        if not viewer:
+            raise LinearError("Linear: viewer не найден в ответе bootstrap")
+        teams_node = data.get("teams") or {}
+        teams = teams_node.get("nodes", [])
+        return {"viewer": viewer, "teams": teams}
 
     def validate_key(self) -> dict:
         """GraphQL `viewer` query — confirms the key works.

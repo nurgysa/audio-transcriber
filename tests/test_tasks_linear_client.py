@@ -15,7 +15,7 @@ from tasks.linear_client import LinearClient, LinearError
 def test_client_rejects_empty_key():
     with pytest.raises(LinearError, match="ключ не задан"):
         LinearClient("")
-    with pytest.raises(LinearError):
+    with pytest.raises(LinearError, match="ключ не задан"):
         LinearClient("   ")
 
 
@@ -77,3 +77,45 @@ def test_graphql_raises_LinearError_on_malformed_json_body():
     with patch.object(c._session, "post", return_value=fake):
         with pytest.raises(LinearError, match="не-JSON"):
             c.validate_key()
+
+
+# ── bootstrap ─────────────────────────────────────────────────────────
+
+
+def test_bootstrap_returns_viewer_and_teams_in_one_query():
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {
+        "data": {
+            "viewer": {"id": "u-1", "name": "Айдар", "email": "a@x.com"},
+            "teams": {
+                "nodes": [
+                    {"id": "t-1", "name": "Engineering", "key": "ENG"},
+                    {"id": "t-2", "name": "Design", "key": "DES"},
+                ]
+            },
+        }
+    }
+    c = LinearClient("lin_api_test")
+    with patch.object(c._session, "post", return_value=fake) as mock_post:
+        result = c.bootstrap()
+    # One round-trip — verifies our optimization
+    assert mock_post.call_count == 1
+    assert result["viewer"]["name"] == "Айдар"
+    assert len(result["teams"]) == 2
+    assert result["teams"][0] == {"id": "t-1", "name": "Engineering", "key": "ENG"}
+
+
+def test_bootstrap_returns_empty_team_list_when_user_has_no_teams():
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {
+        "data": {
+            "viewer": {"id": "u-1", "name": "Solo", "email": "s@x.com"},
+            "teams": {"nodes": []},
+        }
+    }
+    c = LinearClient("lin_api_test")
+    with patch.object(c._session, "post", return_value=fake):
+        result = c.bootstrap()
+    assert result["teams"] == []
