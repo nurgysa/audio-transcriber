@@ -38,6 +38,23 @@ query TeamContext($teamId: String!) {
 }
 """
 
+_CREATE_ISSUE_MUTATION = """
+mutation CreateIssue(
+  $teamId: String!, $title: String!, $description: String,
+  $priority: Int, $assigneeId: String, $labelIds: [String!],
+  $dueDate: TimelessDate
+) {
+  issueCreate(input: {
+    teamId: $teamId, title: $title, description: $description,
+    priority: $priority, assigneeId: $assigneeId,
+    labelIds: $labelIds, dueDate: $dueDate
+  }) {
+    success
+    issue { id identifier url }
+  }
+}
+"""
+
 
 class LinearError(Exception):
     """All Linear HTTP/GraphQL failures bubble up as this."""
@@ -159,3 +176,40 @@ class LinearClient:
         members = (team.get("members") or {}).get("nodes", [])
         labels  = (team.get("labels")  or {}).get("nodes", [])
         return {"members": members, "labels": labels}
+
+    def create_issue(
+        self,
+        team_id: str,
+        title: str,
+        description: str | None = None,
+        priority: int | None = None,
+        assignee_id: str | None = None,
+        label_ids: list[str] | None = None,
+        due_date: str | None = None,
+    ) -> dict:
+        """Create a single Linear issue. Returns {id, identifier, url} on success.
+
+        Only `team_id` and `title` are required by Linear. None values are
+        *omitted* from the GraphQL variables (not sent as null) — Linear
+        treats null as 'set this field to null' rather than 'leave default'.
+
+        Raises LinearError if Linear returns success=false or any HTTP/network
+        failure.
+        """
+        variables: dict = {"teamId": team_id, "title": title}
+        if description is not None:
+            variables["description"] = description
+        if priority is not None:
+            variables["priority"] = priority
+        if assignee_id is not None:
+            variables["assigneeId"] = assignee_id
+        if label_ids:
+            variables["labelIds"] = list(label_ids)
+        if due_date is not None:
+            variables["dueDate"] = due_date
+
+        data = self._graphql(_CREATE_ISSUE_MUTATION, variables)
+        result = data.get("issueCreate") or {}
+        if not result.get("success"):
+            raise LinearError(f"Linear отказался создать тикет: {result}")
+        return result["issue"]

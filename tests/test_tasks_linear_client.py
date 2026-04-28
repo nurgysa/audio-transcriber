@@ -165,3 +165,90 @@ def test_team_context_raises_when_team_id_unknown():
     with patch.object(c._session, "post", return_value=fake):
         with pytest.raises(LinearError, match="команда"):
             c.team_context("t-bogus")
+
+
+# ── create_issue ──────────────────────────────────────────────────────
+
+
+def test_create_issue_sends_full_input_and_returns_issue():
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {
+        "data": {
+            "issueCreate": {
+                "success": True,
+                "issue": {
+                    "id": "issue-uuid",
+                    "identifier": "ENG-1234",
+                    "url": "https://linear.app/x/issue/ENG-1234",
+                },
+            }
+        }
+    }
+    c = LinearClient("lin_api_test")
+    with patch.object(c._session, "post", return_value=fake) as mock_post:
+        result = c.create_issue(
+            team_id="t-1",
+            title="Починить login",
+            description="Длинное описание",
+            priority=2,
+            assignee_id="u-1",
+            label_ids=["l-1", "l-2"],
+            due_date="2026-05-15",
+        )
+    body = mock_post.call_args.kwargs["json"]
+    vars_ = body["variables"]
+    assert vars_["teamId"] == "t-1"
+    assert vars_["title"] == "Починить login"
+    assert vars_["description"] == "Длинное описание"
+    assert vars_["priority"] == 2
+    assert vars_["assigneeId"] == "u-1"
+    assert vars_["labelIds"] == ["l-1", "l-2"]
+    assert vars_["dueDate"] == "2026-05-15"
+    assert result == {
+        "id": "issue-uuid",
+        "identifier": "ENG-1234",
+        "url": "https://linear.app/x/issue/ENG-1234",
+    }
+
+
+def test_create_issue_omits_optional_fields_when_none():
+    """Title is the only required field. None values mustn't be sent — Linear
+    treats null differently from absent."""
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {
+        "data": {
+            "issueCreate": {
+                "success": True,
+                "issue": {"id": "x", "identifier": "DES-1", "url": "https://x"},
+            }
+        }
+    }
+    c = LinearClient("lin_api_test")
+    with patch.object(c._session, "post", return_value=fake) as mock_post:
+        c.create_issue(team_id="t-1", title="Title only")
+    vars_ = mock_post.call_args.kwargs["json"]["variables"]
+    assert vars_ == {"teamId": "t-1", "title": "Title only"}
+    assert "priority" not in vars_
+    assert "assigneeId" not in vars_
+    assert "labelIds" not in vars_
+    assert "dueDate" not in vars_
+
+
+def test_create_issue_raises_when_success_false():
+    """Linear returns success=False (with errors) when input is rejected."""
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {
+        "data": {
+            "issueCreate": {
+                "success": False,
+                "issue": None,
+            }
+        }
+    }
+    c = LinearClient("lin_api_test")
+    with patch.object(c._session, "post", return_value=fake):
+        with pytest.raises(LinearError, match="отказ"):
+            c.create_issue(team_id="t-1", title="X")
