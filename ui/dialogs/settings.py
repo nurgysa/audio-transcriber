@@ -14,10 +14,12 @@ to config.json — no extra save logic needed here.
 
 from __future__ import annotations
 
+import threading
+
 import customtkinter as ctk
 
 from theme import (
-    BG, BLUE, BLUE_DIM, BORDER, FONT, INPUT_BG,
+    BG, BLUE, BLUE_DIM, BORDER, FONT, GREEN, INPUT_BG, RED,
     SURFACE, TEXT_PRIMARY, TEXT_SECONDARY,
 )
 from ui.widgets import (
@@ -379,7 +381,59 @@ class SettingsDialog(ctk.CTkToplevel):
             pass
 
     def _validate_openrouter(self) -> None:
-        """Stub — wired to a real OpenRouter /auth/key call in Task 14."""
+        """Make a single GET /auth/key. Show balance on success, error on fail.
+
+        Runs in a worker thread to keep the dialog responsive on slow networks
+        (the call is bounded by a 10s timeout inside the client). UI updates
+        from the worker are marshalled back via ``self.after(0, ...)``.
+        Saves the key to config.json only on success — typing intermediate
+        garbage doesn't leak into persistent state.
+        """
+        key = self._parent._openrouter_key_var.get().strip()
+        if not key:
+            self._openrouter_status.configure(
+                text="Введите API ключ", text_color=RED,
+            )
+            return
+
         self._openrouter_status.configure(
-            text="(не реализовано)", text_color=TEXT_SECONDARY,
+            text="Проверка...", text_color=TEXT_SECONDARY,
         )
+
+        def worker():
+            try:
+                # Imported lazily to avoid pulling tasks/openrouter_client (and
+                # thus `requests`) at Settings-dialog construction time.
+                from tasks.openrouter_client import (
+                    OpenRouterClient, OpenRouterError,
+                )
+                client = OpenRouterClient(key)
+                try:
+                    info = client.validate_key()
+                finally:
+                    client.close()
+            except OpenRouterError as e:
+                self.after(0, self._openrouter_status.configure, {
+                    "text": f"✗ {e}", "text_color": RED,
+                })
+                return
+            except Exception as e:  # belt-and-braces: anything else surfaces too
+                self.after(0, self._openrouter_status.configure, {
+                    "text": f"✗ {e}", "text_color": RED,
+                })
+                return
+
+            # Key works — persist it.
+            self._parent._config["openrouter_api_key"] = key
+            save_config(self._parent._config)
+
+            balance = info.get("balance_remaining")
+            if balance is not None:
+                msg = f"✓ Активен (баланс: ${balance:.2f})"
+            else:
+                msg = f"✓ Активен ({info.get('label') or 'unlimited'})"
+            self.after(0, self._openrouter_status.configure, {
+                "text": msg, "text_color": GREEN,
+            })
+
+        threading.Thread(target=worker, daemon=True).start()
