@@ -180,3 +180,27 @@ def test_complete_raises_on_429_with_retry_after():
                 model="x/y",
                 messages=[{"role": "user", "content": "hi"}],
             )
+
+
+def test_validate_key_raises_OpenRouterError_on_malformed_json_body():
+    """Review carry-over from Task 8: same JSONDecodeError fix in OpenRouter."""
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.side_effect = ValueError("Expecting value")
+    fake.text = "<html>500 server error</html>"
+    c = OpenRouterClient("sk-or-test")
+    with patch.object(c._session, "get", return_value=fake):
+        with pytest.raises(OpenRouterError, match="не-JSON"):
+            c.validate_key()
+
+
+def test_complete_raises_OpenRouterError_on_malformed_json_body():
+    """Same fix for complete()."""
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.side_effect = ValueError("Expecting value")
+    fake.text = "<html>500 server error</html>"
+    c = OpenRouterClient("sk-or-test")
+    with patch.object(c._session, "post", return_value=fake):
+        with pytest.raises(OpenRouterError, match="не-JSON"):
+            c.complete(model="x/y", messages=[{"role": "user", "content": "hi"}])

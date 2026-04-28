@@ -16,6 +16,12 @@ import requests
 _GRAPHQL_URL = "https://api.linear.app/graphql"
 _DEFAULT_TIMEOUT_S = 30.0
 
+_VIEWER_QUERY = """
+query Viewer {
+  viewer { id name email }
+}
+"""
+
 
 class LinearError(Exception):
     """All Linear HTTP/GraphQL failures bubble up as this."""
@@ -80,9 +86,24 @@ class LinearClient:
                 f"Linear вернул {resp.status_code}: {resp.text[:200]}"
             )
 
-        payload = resp.json()
+        try:
+            payload = resp.json()
+        except ValueError as e:
+            raise LinearError(f"Linear вернул не-JSON ответ: {resp.text[:200]}") from e
         if "errors" in payload and payload["errors"]:
             msgs = "; ".join(e.get("message", "?") for e in payload["errors"])
             raise LinearError(f"Linear GraphQL: {msgs}")
 
         return payload.get("data", {})
+
+    def validate_key(self) -> dict:
+        """GraphQL `viewer` query — confirms the key works.
+
+        Returns dict with id, name, email of the authenticated user.
+        Raises LinearError on any failure.
+        """
+        data = self._graphql(_VIEWER_QUERY)
+        viewer = data.get("viewer")
+        if not viewer:
+            raise LinearError("Linear: viewer не найден в ответе")
+        return viewer

@@ -86,7 +86,11 @@ class OpenRouterClient:
                 f"OpenRouter вернул {resp.status_code}: {resp.text[:200]}"
             )
 
-        data = resp.json().get("data", {})
+        try:
+            payload = resp.json()
+        except ValueError as e:
+            raise OpenRouterError(f"OpenRouter вернул не-JSON ответ: {resp.text[:200]}") from e
+        data = payload.get("data", {})
         usage = float(data.get("usage", 0.0))
         limit = data.get("limit")  # may be None
         return {
@@ -153,7 +157,10 @@ class OpenRouterClient:
                 f"OpenRouter вернул {resp.status_code}: {resp.text[:200]}"
             )
 
-        data = resp.json()
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise OpenRouterError(f"OpenRouter вернул не-JSON ответ: {resp.text[:200]}") from e
         choice = data["choices"][0]
         return {
             "content": choice["message"]["content"],
