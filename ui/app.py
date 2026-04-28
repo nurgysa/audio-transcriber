@@ -121,6 +121,9 @@ class App(ctk.CTk):
         # segments and around the diarization subprocess; setting it
         # interrupts the run within ~250 ms.
         self._cancel_event = threading.Event()
+        # Path to the most recent successful transcription's history folder.
+        # Populated in _on_complete; consumed by _open_extract_tasks_dialog.
+        self._last_history_folder: str | None = None
 
         self._build_ui()
 
@@ -363,17 +366,24 @@ class App(ctk.CTk):
         )
         self._btn_copy.grid(row=0, column=1, padx=8, pady=4)
 
+        self._btn_extract_tasks = tonal_button(
+            btn_frame, text="Извлечь задачи",
+            command=self._open_extract_tasks_dialog,
+            width=160, state="disabled",
+        )
+        self._btn_extract_tasks.grid(row=0, column=2, padx=8, pady=4)
+
         self._btn_history = tonal_button(
             btn_frame, text="История", command=self._open_history_dialog,
             width=130,
         )
-        self._btn_history.grid(row=0, column=2, padx=8, pady=4)
+        self._btn_history.grid(row=0, column=3, padx=8, pady=4)
 
         self._btn_cutter = tonal_button(
             btn_frame, text="Audio Cutter", command=self._open_cutter,
             width=140,
         )
-        self._btn_cutter.grid(row=0, column=3, padx=8, pady=4)
+        self._btn_cutter.grid(row=0, column=4, padx=8, pady=4)
 
     # ── Dialog launchers ───────────────────────────────────────
 
@@ -441,6 +451,50 @@ class App(ctk.CTk):
     def _open_history_dialog(self):
         HistoryDialog(self, on_load_to_main=self._load_history_into_main)
 
+    def _open_extract_tasks_dialog(self):
+        """Validate API keys are set, then open the Extract dialog."""
+        # Gate-check: both keys must be present in config. Mirrors the
+        # cloud-mode key check at line 790-797.
+        openrouter_key = (self._config.get("openrouter_api_key") or "").strip()
+        linear_key     = (self._config.get("linear_api_key") or "").strip()
+        if not openrouter_key or not linear_key:
+            messagebox.showwarning(
+                "Нет API-ключей",
+                "Извлечение задач требует двух ключей:\n"
+                "  • OpenRouter — чтобы вызвать LLM\n"
+                "  • Linear — чтобы получить список команд и участников\n\n"
+                "Откройте Настройки и введите ключи.",
+            )
+            return
+
+        transcript = self._textbox.get("1.0", "end").strip()
+        if not transcript:
+            messagebox.showwarning(
+                "Нет транскрипции",
+                "Сначала запустите транскрипцию или загрузите её из Истории.",
+            )
+            return
+
+        if not self._last_history_folder:
+            messagebox.showwarning(
+                "Нет папки истории",
+                "Извлечение пишет результат в папку из Истории. "
+                "Запустите транскрипцию или откройте запись из Истории, "
+                "затем повторите.",
+            )
+            return
+
+        # Lazy import — pulls in tasks/extractor and (transitively) requests.
+        # Same pattern as Settings dialog's lazy validate-button imports.
+        from ui.dialogs.extract_tasks import ExtractTasksDialog
+        ExtractTasksDialog(
+            self,
+            transcript=transcript,
+            history_folder=self._last_history_folder,
+            transcript_lang=LANGUAGES.get(self._lang_var.get()),
+            config=self._config,
+        )
+
     def _load_history_into_main(self, transcript_text: str, audio_path: str | None):
         """Drop a history entry's transcript into the main textbox.
 
@@ -452,6 +506,11 @@ class App(ctk.CTk):
         self._textbox.insert("1.0", transcript_text)
         self._btn_save.configure(state="normal")
         self._btn_copy.configure(state="normal")
+        # The history entry's folder IS the target for any future extract.
+        self._last_history_folder = os.path.dirname(audio_path) if audio_path else None
+        self._btn_extract_tasks.configure(
+            state="normal" if self._last_history_folder else "disabled",
+        )
         if audio_path and os.path.isfile(audio_path):
             self._audio_path = audio_path
             self._lbl_file.configure(
@@ -959,10 +1018,11 @@ class App(ctk.CTk):
         self._lbl_status.configure(text="Готово!", text_color=GREEN)
         self._btn_save.configure(state="normal")
         self._btn_copy.configure(state="normal")
+        self._btn_extract_tasks.configure(state="normal")
         self._set_running(False)
 
         if self._audio_path:
-            create_history_entry(
+            self._last_history_folder = create_history_entry(
                 audio_file_path=self._audio_path,
                 transcript_text=text,
                 language=LANGUAGES.get(self._lang_var.get()),
