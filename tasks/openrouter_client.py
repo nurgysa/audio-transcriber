@@ -77,7 +77,7 @@ class OpenRouterClient:
         except requests.exceptions.ConnectionError as e:
             raise OpenRouterError(f"Нет соединения с OpenRouter: {e}") from e
         except requests.exceptions.Timeout as e:
-            raise OpenRouterError("Таймаут подключения к OpenRouter") from e
+            raise OpenRouterError("Таймаут подключения к OpenRouter (>10s)") from e
         except requests.exceptions.RequestException as e:
             raise OpenRouterError(f"Ошибка сети OpenRouter: {e}") from e
 
@@ -161,9 +161,18 @@ class OpenRouterClient:
             data = resp.json()
         except ValueError as e:
             raise OpenRouterError(f"OpenRouter вернул не-JSON ответ: {resp.text[:200]}") from e
-        choice = data["choices"][0]
+        # Provider-routing failures occasionally return 200 with {"error": {...}}
+        # instead of {"choices": [...]}. Surface that as OpenRouterError so
+        # callers don't see a raw KeyError/IndexError.
+        try:
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
+        except (KeyError, IndexError, TypeError) as e:
+            err = data.get("error", {}).get("message") if isinstance(data, dict) else None
+            detail = err or f"unexpected response shape: {str(data)[:200]}"
+            raise OpenRouterError(f"OpenRouter: {detail}") from e
         return {
-            "content": choice["message"]["content"],
+            "content": content,
             "usage": data.get("usage", {}),
             "model": data.get("model", model),
         }

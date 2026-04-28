@@ -101,7 +101,7 @@ class Task:
             label_ids=list(d.get("label_ids", [])),
             label_names=list(d.get("label_names", [])),
             due_date=d.get("due_date"),
-            local_id=d.get("local_id") or str(uuid.uuid4()),
+            local_id=d.get("local_id") or str(uuid.uuid4()),  # generate fresh id if absent or empty
             selected=d.get("selected", True),
             status=TaskStatus(d.get("status", "pending")),
             linear_issue_id=d.get("linear_issue_id"),

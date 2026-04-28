@@ -100,6 +100,16 @@ def test_task_label_ids_default_is_independent_per_instance():
     assert b.label_ids == []   # if default leaked, this would also have label-1
 
 
+def test_task_label_names_default_is_independent_per_instance():
+    """Mirror of label_ids isolation — guards against future
+    accidental switch from field(default_factory=list) to =[]."""
+    from tasks.schema import Task
+    a = Task(title="A")
+    b = Task(title="B")
+    a.label_names.append("bug")
+    assert b.label_names == []
+
+
 # ── Serialization round-trip ──────────────────────────────────────────
 
 

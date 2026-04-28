@@ -204,3 +204,28 @@ def test_complete_raises_OpenRouterError_on_malformed_json_body():
     with patch.object(c._session, "post", return_value=fake):
         with pytest.raises(OpenRouterError, match="не-JSON"):
             c.complete(model="x/y", messages=[{"role": "user", "content": "hi"}])
+
+
+def test_complete_raises_on_provider_error_in_200_body():
+    """OpenRouter sometimes returns 200 with {'error': {...}} instead of
+    a normal completion. We surface that as OpenRouterError, not KeyError."""
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {
+        "error": {"message": "Provider returned no choices", "code": 502}
+    }
+    c = OpenRouterClient("sk-or-test")
+    with patch.object(c._session, "post", return_value=fake):
+        with pytest.raises(OpenRouterError, match="Provider returned no choices"):
+            c.complete("anthropic/claude-sonnet-4.5", [{"role": "user", "content": "hi"}])
+
+
+def test_complete_raises_on_empty_choices():
+    """Empty choices array (rare but possible) → OpenRouterError, not IndexError."""
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {"choices": []}
+    c = OpenRouterClient("sk-or-test")
+    with patch.object(c._session, "post", return_value=fake):
+        with pytest.raises(OpenRouterError, match="unexpected response shape"):
+            c.complete("anthropic/claude-sonnet-4.5", [{"role": "user", "content": "hi"}])
