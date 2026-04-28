@@ -371,8 +371,17 @@ def main() -> int:
         return 2
 
     audio_path = sys.argv[1]
-    # sys.argv[2] (device) is accepted for CLI-compat with transcriber.py but
-    # ignored — diarization is GPU-only now.
+    # argv[2] is the device requested by the parent: "cuda", "cpu", or "auto".
+    # "auto" resolves here based on torch.cuda.is_available(); "cuda" hard-
+    # fails (exit 3) if no GPU — that case is intentional and surfaces a
+    # clear error to the user instead of a silent slow CPU run. The parent
+    # checks the same thing before spawning us, but we re-check here as a
+    # belt-and-braces measure (the subprocess could be invoked manually).
+    device_arg = sys.argv[2].lower()
+    if device_arg not in ("cuda", "cpu", "auto"):
+        print(f"unknown device: {device_arg!r}; expected cuda/cpu/auto",
+              file=sys.stderr)
+        return 2
     hf_token = os.environ.get("HF_TOKEN") or None
 
     if not os.path.isfile(audio_path):
@@ -384,17 +393,23 @@ def main() -> int:
     # download/load to CPU, audio decode) in parallel with that transcription,
     # then block on a "GO\n" line on stdin. This collapses the 10-15 s
     # dead-zone the user sees at 70 % between Whisper finishing and
-    # pipeline.to(cuda) returning.
+    # pipeline.to(cuda) returning. (CPU mode also benefits — pyannote import
+    # alone takes 5-10 s.)
     wait_mode = bool(os.environ.get("DIARIZE_WAIT"))
 
-    # Cheap preflight: surface "no GPU at all" before importing pyannote,
-    # so the user gets a fast, actionable error if they're on a CPU-only
-    # machine. The meaningful VRAM check happens AFTER GO (see below) when
-    # Whisper has had a chance to free its weights.
-    if not torch.cuda.is_available():
-        print("CUDA недоступна — для диаризации нужен Nvidia GPU",
-              file=sys.stderr, flush=True)
-        return 3
+    # Resolve "auto" early so the rest of the function sees a concrete device.
+    # Explicit "cuda" with no GPU → exit 3 with a user-friendly message.
+    if device_arg == "auto":
+        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+    elif device_arg == "cuda":
+        if not torch.cuda.is_available():
+            print("CUDA недоступна — для GPU-диаризации нужен Nvidia GPU. "
+                  "Выбери CPU или Авто в настройках.",
+                  file=sys.stderr, flush=True)
+            return 3
+        device_str = "cuda"
+    else:
+        device_str = "cpu"
 
     # Import pyannote lazily so the import-cost is only paid in the subprocess.
     from pyannote.audio import Pipeline
@@ -432,40 +447,61 @@ def main() -> int:
 
     _emit_status("Запуск диаризации...")
 
-    # Re-check VRAM now that the parent has offloaded Whisper. Done AFTER
-    # the GO signal because the pre-GO check would see Whisper's weights
-    # still resident and fail the launch unnecessarily.
-    _MIN_FREE_VRAM_GB = 1.2
-    free_bytes, _ = torch.cuda.mem_get_info()
-    free_gb = free_bytes / 1024**3
-    if free_gb < _MIN_FREE_VRAM_GB:
-        print(
-            f"Недостаточно VRAM для диаризации: {free_gb:.2f} GB свободно, "
-            f"нужно >= {_MIN_FREE_VRAM_GB} GB. Закройте другие приложения, "
-            f"использующие GPU (браузер, Discord), или выберите меньшую "
-            f"модель Whisper.",
-            file=sys.stderr, flush=True,
-        )
-        return 3
+    # VRAM preflight is CUDA-only. On CPU there is no analogous "free RAM"
+    # check that's cheap and accurate (psutil could approximate, but
+    # pyannote's CPU footprint depends on file length in non-trivial ways
+    # and we'd rather raise a real OOM than guess wrong here).
+    free_gb = None
+    if device_str == "cuda":
+        # Re-check VRAM now that the parent has offloaded Whisper. Done AFTER
+        # the GO signal because the pre-GO check would see Whisper's weights
+        # still resident and fail the launch unnecessarily.
+        _MIN_FREE_VRAM_GB = 1.2
+        free_bytes, _ = torch.cuda.mem_get_info()
+        free_gb = free_bytes / 1024**3
+        if free_gb < _MIN_FREE_VRAM_GB:
+            print(
+                f"Недостаточно VRAM для диаризации: {free_gb:.2f} GB свободно, "
+                f"нужно >= {_MIN_FREE_VRAM_GB} GB. Закройте другие приложения, "
+                f"использующие GPU (браузер, Discord), или выберите меньшую "
+                f"модель Whisper.",
+                file=sys.stderr, flush=True,
+            )
+            return 3
 
-    target = torch.device("cuda")
+    target = torch.device(device_str)
     pipeline.to(target)
     print(f"pipeline on {target}", file=sys.stderr, flush=True)
 
-    # Fixed batch=16: safe on 4 GB VRAM, close to max throughput on Turing.
-    # pyannote default (32) is tuned for 8+ GB GPUs and has been observed to
-    # OOM on GTX 1650 Ti. We set both the public attribute and the private
-    # _segmentation/_embedding mirrors as cheap insurance against version drift.
-    _BATCH_SIZE = 16
-    for attr in ("segmentation_batch_size", "embedding_batch_size"):
-        if hasattr(pipeline, attr):
-            setattr(pipeline, attr, _BATCH_SIZE)
-    for obj_attr in ("_segmentation", "_embedding"):
-        obj = getattr(pipeline, obj_attr, None)
-        if obj is not None and hasattr(obj, "batch_size"):
-            obj.batch_size = _BATCH_SIZE
+    # Batch policy by device:
+    #   CUDA: reactive ladder [8, 4, 2]. Pyannote default (32) is tuned for
+    #     8+ GB GPUs; on 4 GB cards even 16 OOMs when the parent's CUDA
+    #     context still owns the offloaded ctranslate2 weights and free VRAM
+    #     is fragmented. We start at 8 and halve on VRAM-pressure errors in
+    #     the retry loop below.
+    #   CPU: a single conservative batch=8. Higher would saturate AVX2
+    #     kernels better but on consumer laptops the bottleneck is single-
+    #     core throughput in pyannote's segmentation, not parallelism;
+    #     keeping batch low caps memory growth and start-up latency for the
+    #     first inference. The retry loop is a no-op here (CPU OOM is rare).
+    # Public attribute + private _segmentation/_embedding mirrors are both
+    # set as cheap insurance against pyannote version drift.
+    def _set_batch_size(size: int) -> None:
+        for attr in ("segmentation_batch_size", "embedding_batch_size"):
+            if hasattr(pipeline, attr):
+                setattr(pipeline, attr, size)
+        for obj_attr in ("_segmentation", "_embedding"):
+            obj = getattr(pipeline, obj_attr, None)
+            if obj is not None and hasattr(obj, "batch_size"):
+                obj.batch_size = size
 
-    mode = f"cuda/batch={_BATCH_SIZE} (free {free_gb:.1f} GB)"
+    _BATCH_LADDER = [8, 4, 2] if device_str == "cuda" else [8]
+    _set_batch_size(_BATCH_LADDER[0])
+    mode = (
+        f"cuda/batch={_BATCH_LADDER[0]} (free {free_gb:.1f} GB)"
+        if device_str == "cuda"
+        else f"cpu/batch={_BATCH_LADDER[0]}"
+    )
     print(f"diarization mode: {mode}", file=sys.stderr, flush=True)
     _emit_status(f"Режим: {mode}")
 
@@ -500,14 +536,51 @@ def main() -> int:
                 file=sys.stderr, flush=True,
             )
 
-    # GPU-only inference. OOM, cuBLAS init failures and any other errors
-    # propagate out of this subprocess as a non-zero exit — the parent turns
-    # them into a RuntimeError with the stderr tail so the user sees the real
-    # cause instead of a silent CPU slowdown.
+    # GPU-only inference with reactive batch reduction on VRAM pressure.
+    # MemoryError ("batch_size is probably too large"), CUDA "out of memory"
+    # and CUBLAS_STATUS_NOT_INITIALIZED (fragmentation-induced cuBLAS init
+    # failure) all surface from pipeline() on tight 4 GB cards. We halve
+    # batch and retry up to _BATCH_LADDER[-1]. Non-VRAM errors propagate
+    # out as exit 1 — the parent turns them into a RuntimeError with the
+    # stderr tail so the user sees the real cause instead of a silent
+    # CPU slowdown.
+    #
+    # Known cosmetic side-effect: the parent's progress bar uses a monotonic
+    # guard, so PROGRESS lines emitted by a retry get filtered until they
+    # exceed the high-water mark of the failed attempt. The bar stalls for
+    # the first part of the retry but the run still completes.
+    def _is_vram_pressure(exc: BaseException) -> bool:
+        msg = str(exc).lower()
+        return (
+            isinstance(exc, MemoryError)
+            or "out of memory" in msg
+            or "cublas_status_not_initialized" in msg
+            or "cublas_status_alloc_failed" in msg
+        )
+
     _emit_status("Анализ речи...")
+    diarization = None
     with _StderrProgressHook() as hook:
         pipeline_kwargs["hook"] = hook
-        diarization = pipeline(audio_input, **pipeline_kwargs)
+        for attempt, batch in enumerate(_BATCH_LADDER):
+            if attempt > 0:
+                _set_batch_size(batch)
+                print(f"retry: cuda/batch={batch}", file=sys.stderr, flush=True)
+                _emit_status(f"VRAM tight, retry batch={batch}")
+            try:
+                diarization = pipeline(audio_input, **pipeline_kwargs)
+                break
+            except (MemoryError, RuntimeError) as e:
+                if not _is_vram_pressure(e) or batch == _BATCH_LADDER[-1]:
+                    raise
+                print(
+                    f"VRAM pressure at batch={batch}: "
+                    f"{type(e).__name__}: {e}; will retry with smaller batch",
+                    file=sys.stderr, flush=True,
+                )
+                if device_str == "cuda":
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
 
     # pyannote doesn't emit progress for discrete_diarization + our own post-
     # processing below; bump the bar to the end of our allotted band so the

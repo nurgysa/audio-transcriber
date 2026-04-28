@@ -6,6 +6,9 @@ pyannote.audio==4.0.4
 speechbrain==1.1.0
 pytorch-lightning==2.6.1
 customtkinter==5.2.2
+nvidia-ml-py==12.560.30
+psutil==6.1.0
+requests==2.32.5
 soundfile==0.13.1
 sounddevice==0.5.5
 scipy==1.15.3

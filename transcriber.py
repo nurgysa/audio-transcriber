@@ -34,15 +34,44 @@ def _check_cancelled(cancel_event) -> None:
         raise TranscriptionCancelled()
 
 
+def _cuda_is_available() -> bool:
+    """
+    Cheap CUDA-availability probe via ctranslate2.
+
+    We deliberately avoid `torch.cuda.is_available()` here — it would force
+    a torch import in the main process before ctranslate2 has finished
+    loading its DLLs, which on Windows triggers the CUDA DLL conflict that
+    motivates the import-order discipline at the top of this file.
+    Returns False on any error (no GPU, driver missing, broken CT2 install).
+    """
+    try:
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        return False
+
+
 # Files longer than this are split into chunks before transcription. The
-# threshold is set just below the empirically-observed failure point of the
-# numpy contiguous-allocation bug in faster_whisper's full-file STFT
-# preprocessing on Windows (verified failure on 118-min, success on 62-min).
-_LONG_FILE_THRESHOLD_S = 90 * 60   # 90 minutes
-# Each chunk's STFT must fit a single contiguous numpy allocation. 20 min
-# at 16 kHz / hop=160 / n_fft=400 / complex128 = ~390 MB — comfortable on
-# Windows fragmented heaps. Keep below ~30 min for headroom.
-_CHUNK_DURATION_S = 20 * 60        # 20 minutes
+# threshold protects against a numpy contiguous-allocation bug in
+# faster_whisper's full-file STFT on Windows: even when the system has
+# plenty of free RAM, np.fft.rfft can't always find a contiguous block
+# big enough for the STFT output.
+#
+# History:
+#   - Initially 90 min, based on empirical testing (62 min worked,
+#     118 min failed).
+#   - Lowered to 25 min after a 32-min file failed in production
+#     (logs/transcribe_crash_2026-04-27_14-37-18.log) once the process
+#     started carrying psutil, pynvml, requests, providers package and
+#     the live-monitor dialog — more long-lived Python objects =
+#     more heap fragmentation = lower contiguous-allocation ceiling.
+# At this threshold a 32-min file (which was the failing case) gets
+# split into two ~16-min chunks of ~280 MB STFT each, well clear of
+# the fragmentation ceiling on a 16 GB Windows machine.
+_LONG_FILE_THRESHOLD_S = 25 * 60   # 25 minutes
+# Each chunk's STFT must fit a single contiguous numpy allocation. 15 min
+# at 16 kHz / hop=160 / n_fft=400 / complex128 = ~280 MB — comfortable on
+# fragmented Windows heaps even after long-running app sessions.
+_CHUNK_DURATION_S = 15 * 60        # 15 minutes
 # Chunk boundary overlap: each chunk after the first is extended 3 s
 # backward, so boundary words are transcribed in both chunks and the caller
 # can keep the chronologically-earlier version. 3 s is enough to span any
@@ -191,15 +220,23 @@ class Transcriber:
         return self._model_size
 
     def _get_device(self) -> str:
-        if self._device != "auto":
-            return self._device
-        try:
-            import ctranslate2
-            if ctranslate2.get_cuda_device_count() > 0:
+        # Explicit "cpu" — honour without question.
+        if self._device == "cpu":
+            return "cpu"
+        # Explicit "cuda" — hard-fail if no GPU. We do NOT silently fall back
+        # to CPU because the user picked GPU on purpose; a silent CPU run
+        # would be 5-10× slower with no warning. "auto" exists for the
+        # silent-fallback case.
+        if self._device == "cuda":
+            if _cuda_is_available():
                 return "cuda"
-        except Exception:
-            pass
-        return "cpu"
+            raise RuntimeError(
+                "GPU выбран как устройство, но CUDA недоступна. "
+                "Выбери CPU или Авто в настройках, либо проверь, что "
+                "NVIDIA-драйвер установлен и видеокарта поддерживается."
+            )
+        # "auto" (and any unknown value) — best-effort.
+        return "cuda" if _cuda_is_available() else "cpu"
 
     def _get_compute_type(self, device: str) -> str:
         """
@@ -274,6 +311,11 @@ class Transcriber:
         """
         if self._model is None or self._on_cpu:
             return
+        # No-op when Whisper was loaded on CPU to begin with — there is no
+        # VRAM to free, and ctranslate2's unload_model(to_cpu=True) on a
+        # CPU-resident model can confuse its internal device tracking.
+        if self._get_device() == "cpu":
+            return
         self._model.model.unload_model(to_cpu=True)
         self._on_cpu = True
 
@@ -311,6 +353,7 @@ class Transcriber:
         self,
         audio_path: str,
         hf_token: str | None,
+        device: str = "auto",
         num_speakers: int | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
@@ -337,11 +380,32 @@ class Transcriber:
         Returns a handle dict consumed by ``_await_diarization_subprocess``:
         proc, audio_path, stdout/stderr buffers, consumer threads.
         """
+        # Resolve device ahead of spawn. "auto" picks GPU when available,
+        # CPU otherwise — no surprise to the user. Explicit "cuda" with no
+        # GPU is a hard error here (Q2.a): we don't want to silently spawn
+        # a subprocess that will exit 3 ten seconds later — better to fail
+        # immediately with a message that points to the device picker.
+        if device == "cuda" and not _cuda_is_available():
+            raise RuntimeError(
+                "GPU выбран для диаризации, но CUDA недоступна. "
+                "Выбери CPU или Авто в настройках, либо проверь, что "
+                "NVIDIA-драйвер установлен."
+            )
+        if device == "auto":
+            device = "cuda" if _cuda_is_available() else "cpu"
+        # device is now one of {"cuda", "cpu"} — passed to worker via argv.
+
         worker = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "diarize_worker.py",
         )
         env = dict(os.environ)
         env["DIARIZE_WAIT"] = "1"
+        # Reduce CUDA allocator fragmentation. On 4 GB cards, pyannote's
+        # segmentation pass hits "reserved but unallocated" OOM that surfaces
+        # as cuBLAS_NOT_INITIALIZED on the first matmul. Expandable segments
+        # let the allocator grow contiguous regions instead of leaving holes.
+        # Harmless on CPU — torch ignores it when CUDA isn't engaged.
+        env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
         if hf_token:
             env["HF_TOKEN"] = hf_token
         # Speaker-count hints travel as env vars (optional, each independent).
@@ -357,7 +421,7 @@ class Transcriber:
             env["DIARIZE_VOICE_LIB"] = voice_lib_path
 
         proc = subprocess.Popen(
-            [sys.executable, worker, audio_path, "cuda"],
+            [sys.executable, worker, audio_path, device],
             env=env,
             stdin=subprocess.PIPE,    # for the GO signal
             stdout=subprocess.PIPE,
@@ -499,11 +563,94 @@ class Transcriber:
             )
         return [tuple(row) for row in json.loads("".join(stdout_chunks).strip())]
 
+    def _transcribe_via_cloud(
+        self,
+        audio_path: str,
+        *,
+        language: str | None,
+        diarize: bool,
+        hotwords: str | None,
+        num_speakers: int | None,
+        min_speakers: int | None,
+        max_speakers: int | None,
+        cloud_provider: str,
+        cloud_api_key: str,
+        on_progress,
+        on_status,
+        cancel_event,
+    ) -> str:
+        """
+        Cloud branch — delegate to a managed transcription API.
+
+        Skips the local pipeline entirely (no ffmpeg normalize, no Whisper,
+        no pyannote subprocess). The provider returns segments in the same
+        shape the local path produces, so the same TXT/SRT/VTT formatters
+        downstream work without modification.
+
+        ``voice_lib_path`` is intentionally ignored here: matching enrolled
+        voices to clusters needs the raw embeddings, which managed APIs
+        don't expose. The user keeps the SPEAKER_A/B/... → «Спикер 1/2/...»
+        rename via the standard ``_build_speaker_map`` path.
+        """
+        # Local imports keep providers/ off the import path of CLI tools
+        # like ``audio_cutter`` that don't need it. Also avoids paying the
+        # ``requests`` import cost at module load.
+        from providers import get_provider, ProviderError, TranscriptionOptions
+
+        try:
+            provider = get_provider(cloud_provider, cloud_api_key)
+        except ProviderError as e:
+            raise RuntimeError(str(e)) from e
+
+        hotword_list: list[str] = []
+        if hotwords and hotwords.strip():
+            # Same comma-split rule the local prompt builder uses.
+            hotword_list = [
+                h.strip() for h in hotwords.split(",") if h.strip()
+            ]
+
+        opts = TranscriptionOptions(
+            language=language,
+            diarize=diarize,
+            hotwords=hotword_list,
+            num_speakers=num_speakers,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+
+        try:
+            result = provider.transcribe(
+                audio_path,
+                opts,
+                on_status=on_status,
+                on_progress=on_progress,
+                cancel_event=cancel_event,
+            )
+        except ProviderError as e:
+            # Surface the user-facing message verbatim, preserving the
+            # original cause for the crash log via __cause__.
+            raise RuntimeError(str(e)) from e
+
+        # Cache for SRT/VTT export (mirrors the local path's
+        # ``self.last_segments = transcript_segments`` line below).
+        self.last_segments = result.segments
+
+        if on_progress:
+            on_progress(100.0)
+
+        # Pick the same formatter the local path uses, based on whether
+        # any segment carries a speaker label.
+        has_speakers = any("speaker" in seg for seg in result.segments)
+        if diarize and has_speakers:
+            return format_diarized(result.segments)
+        return format_timed(result.segments)
+
     def transcribe(
         self,
         audio_path: str,
         language: str | None = None,
         diarize: bool = False,
+        diarize_device: str = "auto",
         hf_token: str | None = None,
         hotwords: str | None = None,
         num_speakers: int | None = None,
@@ -511,6 +658,8 @@ class Transcriber:
         max_speakers: int | None = None,
         voice_lib_path: str | None = None,
         normalize_audio: bool = True,
+        cloud_provider: str | None = None,
+        cloud_api_key: str | None = None,
         on_progress=None,
         on_status=None,
         cancel_event=None,
@@ -542,6 +691,26 @@ class Transcriber:
         Returns:
             The transcribed text, with speaker labels if diarize=True.
         """
+        # Cloud short-circuit. When cloud_provider is set, skip the entire
+        # local pipeline (ffmpeg normalize / Whisper / pyannote subprocess)
+        # and delegate to the chosen managed API. Returns formatted text in
+        # the same shape as the local path so the UI doesn't need to branch.
+        if cloud_provider:
+            return self._transcribe_via_cloud(
+                audio_path,
+                language=language,
+                diarize=diarize,
+                hotwords=hotwords,
+                num_speakers=num_speakers,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+                cloud_provider=cloud_provider,
+                cloud_api_key=cloud_api_key or "",
+                on_progress=on_progress,
+                on_status=on_status,
+                cancel_event=cancel_event,
+            )
+
         hotwords_str = hotwords.strip() if hotwords and hotwords.strip() else None
         # initial_prompt works through Whisper's decode context (stylistic
         # framing + proper-noun spelling), while hotwords= biases the
@@ -593,6 +762,7 @@ class Transcriber:
             if diarize:
                 diarize_handle = self._launch_diarization_subprocess(
                     wav_path, hf_token,
+                    device=diarize_device,
                     num_speakers=num_speakers,
                     min_speakers=min_speakers,
                     max_speakers=max_speakers,

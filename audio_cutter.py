@@ -24,7 +24,7 @@ from audio_io import SAMPLE_RATE, ffmpeg_trim, load_mono_float32
 from theme import (
     BG, BLUE, BLUE_DIM, BLUE_SURFACE, BORDER, FONT, GREEN, INPUT_BG,
     MARKER_END_COLOR, MARKER_START_COLOR, RED, SURFACE, SURFACE_BRIGHT,
-    TEXT_PRIMARY, TEXT_SECONDARY, WAVE_COLOR, WAVE_SELECTED, YELLOW,
+    TEXT_PRIMARY, TEXT_SECONDARY, WAVE_COLOR, WAVE_SELECTED, YELLOW, t,
 )
 
 
@@ -151,8 +151,11 @@ class AudioCutter(ctk.CTkToplevel):
         wave_frame.grid_columnconfigure(0, weight=1)
         wave_frame.grid_rowconfigure(0, weight=1)
 
+        # tk.Canvas needs a string bg, so resolve the SURFACE tuple via t().
+        # Re-applied in _apply_theme() if the user switches theme while the
+        # cutter is open.
         self._canvas = tk.Canvas(
-            wave_frame, bg=SURFACE, highlightthickness=0,
+            wave_frame, bg=t(SURFACE), highlightthickness=0,
             cursor="crosshair",
         )
         self._canvas.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
@@ -307,19 +310,21 @@ class AudioCutter(ctk.CTkToplevel):
         step = max(1, len(self._samples) // n_points)
         display = self._samples[::step]
 
-        # Draw selection background
+        # Draw selection background. Light translucent blue tint in light
+        # mode, deeper navy in dark mode — both readable as "this is the
+        # selected range" without overpowering the waveform itself.
         x_start = self._sec_to_x(self._start_sec, w)
         x_end = self._sec_to_x(self._end_sec, w)
         self._canvas.create_rectangle(
             x_start, 0, x_end, h,
-            fill="#1A3A5C", outline="",
+            fill=t(("#D2E3FC", "#1A3A5C")), outline="",
         )
 
         # Draw split point lines
         for sp in self._split_points:
             x = self._sec_to_x(sp, w)
             self._canvas.create_line(
-                x, 0, x, h, fill=YELLOW, width=2, dash=(4, 4),
+                x, 0, x, h, fill=t(YELLOW), width=2, dash=(4, 4),
             )
 
         # Draw waveform
@@ -330,58 +335,78 @@ class AudioCutter(ctk.CTkToplevel):
             points.append((x, y))
 
         if len(points) > 1:
-            # Draw the waveform line
+            wave_in = t(WAVE_SELECTED)
+            wave_out = t(WAVE_COLOR)
             for i in range(len(points) - 1):
                 x1, y1 = points[i]
                 x2, y2 = points[i + 1]
-                # Color based on whether in selection
-                t = (i / len(points)) * self._duration
-                color = WAVE_SELECTED if self._start_sec <= t <= self._end_sec else WAVE_COLOR
+                # cur_t — local *time* at this waveform sample. Renamed
+                # from `t` to avoid shadowing the imported color resolver.
+                cur_t = (i / len(points)) * self._duration
+                color = wave_in if self._start_sec <= cur_t <= self._end_sec else wave_out
                 self._canvas.create_line(x1, y1, x2, y2, fill=color, width=1)
 
         # Draw center line
-        self._canvas.create_line(0, mid_y, w, mid_y, fill=BORDER, width=1)
+        self._canvas.create_line(0, mid_y, w, mid_y, fill=t(BORDER), width=1)
 
         # Draw time markers on axis
         interval = self._get_time_interval()
-        t = 0.0
-        while t <= self._duration:
-            x = self._sec_to_x(t, w)
-            self._canvas.create_line(x, h - 15, x, h - 5, fill=TEXT_SECONDARY, width=1)
+        cur_t = 0.0
+        tick_color = t(TEXT_SECONDARY)
+        while cur_t <= self._duration:
+            x = self._sec_to_x(cur_t, w)
+            self._canvas.create_line(x, h - 15, x, h - 5, fill=tick_color, width=1)
             self._canvas.create_text(
-                x, h - 2, text=self._fmt(t), fill=TEXT_SECONDARY,
+                x, h - 2, text=self._fmt(cur_t), fill=tick_color,
                 font=(FONT, 9), anchor="s",
             )
-            t += interval
+            cur_t += interval
 
         # Draw silence overlays (red, semi-transparent via stipple — Tk has no alpha)
+        red_str = t(RED)
         for s_start, s_end in self._silence_ranges_sec:
             sx1 = self._sec_to_x(s_start, w)
             sx2 = self._sec_to_x(s_end, w)
             self._canvas.create_rectangle(
                 sx1, 0, sx2, h,
-                fill=RED, outline="", stipple="gray25",
+                fill=red_str, outline="", stipple="gray25",
             )
 
         # Draw start marker
+        start_color = t(MARKER_START_COLOR)
         self._canvas.create_line(
             x_start, 0, x_start, h,
-            fill=MARKER_START_COLOR, width=3, tags="marker_start",
+            fill=start_color, width=3, tags="marker_start",
         )
         self._canvas.create_polygon(
             x_start - 8, 0, x_start + 8, 0, x_start, 12,
-            fill=MARKER_START_COLOR, tags="marker_start",
+            fill=start_color, tags="marker_start",
         )
 
         # Draw end marker
+        end_color = t(MARKER_END_COLOR)
         self._canvas.create_line(
             x_end, 0, x_end, h,
-            fill=MARKER_END_COLOR, width=3, tags="marker_end",
+            fill=end_color, width=3, tags="marker_end",
         )
         self._canvas.create_polygon(
             x_end - 8, 0, x_end + 8, 0, x_end, 12,
-            fill=MARKER_END_COLOR, tags="marker_end",
+            fill=end_color, tags="marker_end",
         )
+
+    def _apply_theme(self) -> None:
+        """Re-paint the waveform Canvas for the current CTk mode.
+
+        CTk widgets in this dialog (frames, buttons, labels) auto-update
+        on ``ctk.set_appearance_mode``; only the plain ``tk.Canvas`` needs
+        an explicit color sync. Called by App._on_appearance_changed when
+        the user switches theme with the cutter open.
+        """
+        try:
+            self._canvas.config(bg=t(SURFACE))
+            self._draw_waveform()
+        except Exception:
+            pass
 
     def _sec_to_x(self, sec: float, canvas_width: int) -> float:
         if self._duration <= 0:

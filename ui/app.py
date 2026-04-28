@@ -17,6 +17,8 @@ from theme import (
 )
 from transcriber import Transcriber, TranscriptionCancelled
 from ui.dialogs.history import HistoryDialog
+from ui.dialogs.settings import SettingsDialog
+from ui.dialogs.system_monitor import SystemMonitorDialog
 from ui.dialogs.terms import TermsDialog
 from ui.dialogs.voices import VoicesDialog
 from ui.widgets import (
@@ -55,6 +57,31 @@ SPEAKER_COUNTS: dict[str, tuple[int | None, int | None, int | None]] = {
     "5+": (None, 5, None),
 }
 
+# Compute device choices.
+#   "Авто"        — pick GPU when available, otherwise CPU. Silent fallback;
+#                   right default for users who don't know what hardware
+#                   they have.
+#   "GPU (NVIDIA)" — explicit cuda. Hard-fails if no NVIDIA GPU found —
+#                   we don't silently demote to CPU because the user picked
+#                   GPU on purpose, and a 5-10× slower run with no warning
+#                   would be confusing.
+#   "CPU"         — explicit cpu. Always works. Slow on diarization
+#                   (~10-20× slower than GPU); a warning label appears
+#                   under the diarization device picker when this is chosen.
+DEVICES: dict[str, str] = {
+    "Авто": "auto",
+    "GPU (NVIDIA)": "cuda",
+    "CPU": "cpu",
+}
+
+# Visible label → CustomTkinter appearance_mode value.
+# "system" follows the Windows light/dark setting; the other two are explicit.
+APPEARANCE_MODES: dict[str, str] = {
+    "Системная": "system",
+    "Светлая": "light",
+    "Тёмная": "dark",
+}
+
 
 class App(ctk.CTk):
     def __init__(self):
@@ -63,7 +90,14 @@ class App(ctk.CTk):
         self.title("Audio Transcriber")
         self.geometry("780x700")
         self.minsize(680, 600)
-        ctk.set_appearance_mode("dark")
+        # Apply the saved appearance mode BEFORE constructing widgets so
+        # tuple colors in theme.py resolve to the right palette on first
+        # paint. Default "system" follows the OS setting. Persisted via
+        # _on_appearance_changed when the user switches in Settings.
+        saved_appearance = load_config().get("appearance_mode", "Системная")
+        ctk.set_appearance_mode(
+            APPEARANCE_MODES.get(saved_appearance, "system"),
+        )
         self.configure(fg_color=BG)
 
         self._audio_path: str | None = None
@@ -72,6 +106,17 @@ class App(ctk.CTk):
         self._is_running = False
         self._rec_timer_id: str | None = None
         self._config = load_config()
+        # Open Settings dialog reference (singleton). Lets terms/voices saves
+        # refresh its summaries live; None when dialog is closed.
+        self._settings_dialog: SettingsDialog | None = None
+        # Open System Monitor dialog reference (singleton). Non-modal —
+        # designed to stay open during transcription. Re-clicking the
+        # button just brings the existing window to the front.
+        self._monitor_dialog: SystemMonitorDialog | None = None
+        # Most recently opened AudioCutter instance. Tracked only so that
+        # _on_appearance_changed can ping it to redraw its Canvas — the
+        # cutter is otherwise free to be reopened/recreated freely.
+        self._cutter: AudioCutter | None = None
         # Cancel signal for the worker thread. Worker checks this between
         # segments and around the diarization subprocess; setting it
         # interrupts the run within ~250 ms.
@@ -157,133 +202,108 @@ class App(ctk.CTk):
         self._rec_level.grid(row=0, column=3, padx=(8, 16), pady=14, sticky="e")
         self._rec_level.set(0)
 
-        # --- Settings card ---
-        settings_card = card(self)
-        settings_card.grid(row=3, column=0, padx=16, pady=6, sticky="ew")
-        settings_card.grid_columnconfigure(1, weight=1)
-        settings_card.grid_columnconfigure(4, weight=1)
-
-        # Row 0: Language + Model
-        label(settings_card, "Язык").grid(row=0, column=0, padx=(16, 8), pady=(14, 6))
+        # --- Persistent state vars ---
+        # All settings StringVar/BooleanVar live on App as the source of truth.
+        # The Settings dialog binds widgets to these vars on demand; closing
+        # the dialog destroys widgets but leaves vars (and config.json state)
+        # intact, so _start_transcription always reads consistent values.
         saved_lang = self._config.get("language", "Авто-определение")
         self._lang_var = ctk.StringVar(
             value=saved_lang if saved_lang in LANGUAGES else "Авто-определение",
         )
-        self._lang_menu = option_menu(
-            settings_card, self._lang_var, list(LANGUAGES.keys()),
-            command=self._on_language_changed,
-        )
-        self._lang_menu.grid(row=0, column=1, padx=4, pady=(14, 6), sticky="w")
-
-        label(settings_card, "Модель").grid(row=0, column=2, padx=(24, 8), pady=(14, 6))
         # Default to large-v3 (maximum quality). On this machine large-v3
         # int8_float16 is verified at ~1.5 GB VRAM and 5.7× realtime on GTX
-        # 1650 Ti — fast enough to be the everyday default. Persisted to
-        # config.json so the user's choice survives restarts.
+        # 1650 Ti — fast enough to be the everyday default.
         saved_model = self._config.get("model", "large-v3 (максимум)")
         self._model_var = ctk.StringVar(
             value=saved_model if saved_model in MODELS else "large-v3 (максимум)",
         )
-        self._model_menu = option_menu(
-            settings_card, self._model_var, list(MODELS.keys()),
-            command=self._on_model_changed,
-        )
-        self._model_menu.grid(row=0, column=3, columnspan=2, padx=4, pady=(14, 6), sticky="w")
-
-        # Row 1: Diarization + HF Token
         self._diar_var = ctk.BooleanVar(value=False)
-        self._diar_check = ctk.CTkCheckBox(
-            settings_card, text="Диаризация",
-            variable=self._diar_var, command=self._toggle_diarization,
-            font=ctk.CTkFont(family=FONT, size=13),
-            text_color=TEXT_PRIMARY, fg_color=BLUE, hover_color=BLUE_DIM,
-            border_color=BORDER, corner_radius=4, checkbox_height=20, checkbox_width=20,
-        )
-        self._diar_check.grid(row=1, column=0, columnspan=2, padx=16, pady=(6, 14), sticky="w")
-
-        label(settings_card, "HF Token").grid(row=1, column=2, padx=(24, 8), pady=(6, 14))
         self._hf_token_var = ctk.StringVar()
-        self._hf_token_entry = ctk.CTkEntry(
-            settings_card, textvariable=self._hf_token_var, height=36,
-            corner_radius=10, border_color=BORDER, border_width=1,
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(family=FONT, size=12),
-            placeholder_text="hf_...", state="disabled",
-        )
-        self._hf_token_entry.grid(row=1, column=3, padx=4, pady=(6, 14), sticky="ew")
-
-        self._btn_paste = tonal_button(
-            settings_card, text="Вставить", command=self._paste_token_btn,
-            width=100, state="disabled",
-        )
-        self._btn_paste.grid(row=1, column=4, padx=(4, 16), pady=(6, 14), sticky="w")
-
-        # Row 2: Speaker count hint (diarization only).
-        # Values map to pyannote hints:
-        #   "Авто"  → no hint (pyannote auto-detects)
-        #   "2".."4"→ num_speakers=K (exact hint; ~2× DER improvement when correct)
-        #   "5+"    → min_speakers=5 (open upper bound)
-        # Persisted to config.json on change. Grey when diarize is off.
-        label(settings_card, "Число спикеров").grid(
-            row=2, column=0, padx=(16, 8), pady=(0, 14),
-        )
         saved_spk = self._config.get("speaker_count", "Авто")
         self._spk_count_var = ctk.StringVar(
             value=saved_spk if saved_spk in SPEAKER_COUNTS else "Авто",
         )
-        self._spk_count_menu = option_menu(
-            settings_card, self._spk_count_var, list(SPEAKER_COUNTS.keys()),
-            command=self._on_speaker_count_changed, state="disabled",
-        )
-        self._spk_count_menu.grid(row=2, column=1, padx=4, pady=(0, 14), sticky="w")
-
-        # Loudness-normalization toggle (EBU R128 + 80 Hz highpass, applied
-        # to all source formats before transcription). Default ON — production
-        # quality default. User can disable for pre-mastered material where
-        # the filter would do more harm than good. Persisted to config.json.
         self._normalize_var = ctk.BooleanVar(
             value=bool(self._config.get("normalize_audio", True)),
         )
-        self._normalize_check = ctk.CTkCheckBox(
-            settings_card, text="Нормализовать громкость",
-            variable=self._normalize_var, command=self._on_normalize_changed,
+        saved_tr_dev = self._config.get("transcribe_device", "Авто")
+        self._tr_device_var = ctk.StringVar(
+            value=saved_tr_dev if saved_tr_dev in DEVICES else "Авто",
+        )
+        saved_di_dev = self._config.get("diarize_device", "Авто")
+        self._di_device_var = ctk.StringVar(
+            value=saved_di_dev if saved_di_dev in DEVICES else "Авто",
+        )
+
+        # Cloud (managed-API) state. When _cloud_enabled_var is True, the
+        # device pickers above are bypassed and transcription is routed to
+        # the chosen provider. Default is False — opt-in only, since the
+        # audio leaves the user's machine.
+        self._cloud_enabled_var = ctk.BooleanVar(
+            value=bool(self._config.get("cloud_enabled", False)),
+        )
+        self._cloud_provider_var = ctk.StringVar(
+            value=self._config.get("cloud_provider", "AssemblyAI"),
+        )
+        self._cloud_api_key_var = ctk.StringVar(
+            value=self._config.get("cloud_api_key", ""),
+        )
+
+        # Appearance mode (light/dark/system). The actual ctk.set_appearance_mode
+        # call already happened above with the saved value; this StringVar
+        # just drives the Settings dialog dropdown and the change callback.
+        saved_appearance_label = self._config.get("appearance_mode", "Системная")
+        self._appearance_var = ctk.StringVar(
+            value=saved_appearance_label
+            if saved_appearance_label in APPEARANCE_MODES else "Системная",
+        )
+
+        # --- Run controls card ---
+        # Slim card with only per-run controls: diarization toggle, speaker
+        # count hint, and the Settings button. Everything else (language,
+        # model, HF token, normalize, devices, dictionaries) lives in the
+        # Settings dialog, opened via the button on the right.
+        run_card = card(self)
+        run_card.grid(row=3, column=0, padx=16, pady=6, sticky="ew")
+        run_card.grid_columnconfigure(2, weight=1)
+
+        self._diar_check = ctk.CTkCheckBox(
+            run_card, text="Диаризация",
+            variable=self._diar_var, command=self._toggle_diarization,
             font=ctk.CTkFont(family=FONT, size=13),
             text_color=TEXT_PRIMARY, fg_color=BLUE, hover_color=BLUE_DIM,
             border_color=BORDER, corner_radius=4,
             checkbox_height=20, checkbox_width=20,
         )
-        self._normalize_check.grid(
-            row=2, column=2, columnspan=3,
-            padx=(24, 16), pady=(0, 14), sticky="w",
+        self._diar_check.grid(row=0, column=0, padx=(16, 16), pady=14, sticky="w")
+
+        # Speaker-count hint. Values map to pyannote hints:
+        #   "Авто"  → no hint (pyannote auto-detects)
+        #   "2".."4"→ num_speakers=K (exact hint; ~2× DER improvement when correct)
+        #   "5+"    → min_speakers=5 (open upper bound)
+        # Greyed out when diarize is off.
+        label(run_card, "Число спикеров").grid(row=0, column=1, padx=(0, 8), pady=14)
+        self._spk_count_menu = option_menu(
+            run_card, self._spk_count_var, list(SPEAKER_COUNTS.keys()),
+            command=self._on_speaker_count_changed, state="disabled",
         )
+        self._spk_count_menu.grid(row=0, column=2, padx=(0, 12), pady=14, sticky="w")
 
-        # --- Hotwords / Voices card ---
-        hw_card = card(self)
-        hw_card.grid(row=4, column=0, padx=16, pady=6, sticky="ew")
-        hw_card.grid_columnconfigure(1, weight=1)
-
-        self._btn_terms = tonal_button(
-            hw_card, text="Словарь терминов",
-            command=self._open_terms_dialog, width=180,
+        # Monitor button: opens the non-modal system stats window.
+        # Sits to the LEFT of Settings — same row, two clickable buttons
+        # at the right edge of the run card.
+        self._btn_monitor = tonal_button(
+            run_card, text="Монитор",
+            command=self._open_monitor_dialog, width=110,
         )
-        self._btn_terms.grid(row=0, column=0, padx=16, pady=(14, 6))
+        self._btn_monitor.grid(row=0, column=3, padx=(0, 8), pady=14, sticky="e")
 
-        self._lbl_terms = label(hw_card, text="", anchor="w")
-        self._lbl_terms.grid(row=0, column=1, padx=(0, 16), pady=(14, 6), sticky="ew")
-        self._update_terms_label()
-
-        # Voices button: analogous to the terms button, in the same card.
-        # Unlike hotwords (CTC-level biasing), enrolled voices rename
-        # diarization clusters post-hoc — independent feature, but visually
-        # they're both "dictionaries" the user maintains between sessions.
-        self._btn_voices = tonal_button(
-            hw_card, text="Голоса", command=self._open_voices_dialog, width=180,
+        self._btn_settings = tonal_button(
+            run_card, text="Настройки",
+            command=self._open_settings_dialog, width=140,
         )
-        self._btn_voices.grid(row=1, column=0, padx=16, pady=(6, 14))
-
-        self._lbl_voices = label(hw_card, text="", anchor="w")
-        self._lbl_voices.grid(row=1, column=1, padx=(0, 16), pady=(6, 14), sticky="ew")
-        self._update_voices_label()
+        self._btn_settings.grid(row=0, column=4, padx=(0, 16), pady=14, sticky="e")
 
         # --- Progress bar ---
         self._progress = ctk.CTkProgressBar(
@@ -331,37 +351,66 @@ class App(ctk.CTk):
 
     # ── Dialog launchers ───────────────────────────────────────
 
-    def _open_terms_dialog(self):
-        TermsDialog(self, self._config, self._update_terms_label)
+    def _open_settings_dialog(self):
+        # Track the open dialog so terms/voices saves can refresh its
+        # summaries live. Cleared on close via Tk's <Destroy> event.
+        if self._settings_dialog is not None:
+            try:
+                self._settings_dialog.lift()
+                self._settings_dialog.focus_set()
+                return
+            except Exception:
+                self._settings_dialog = None
+        self._settings_dialog = SettingsDialog(self)
+        self._settings_dialog.bind(
+            "<Destroy>", lambda _e: self._on_settings_dialog_closed(_e),
+        )
 
-    def _update_terms_label(self):
-        terms = self._config.get("hotwords", [])
-        if terms:
-            preview = ", ".join(terms[:5])
-            if len(terms) > 5:
-                preview += f"  ... (+{len(terms) - 5})"
-            self._lbl_terms.configure(text=preview, text_color=TEXT_PRIMARY)
-        else:
-            self._lbl_terms.configure(text="Нет сохранённых терминов", text_color=TEXT_SECONDARY)
+    def _on_settings_dialog_closed(self, event) -> None:
+        # CTk fires <Destroy> for many child widgets; only the top-level
+        # toplevel itself signals dialog close. Compare against widget to
+        # avoid clearing the reference on inner widget destruction.
+        if event.widget is self._settings_dialog:
+            self._settings_dialog = None
+
+    def _open_monitor_dialog(self) -> None:
+        # Singleton: re-clicking the button while the monitor is open
+        # just lifts the existing window. Avoids duplicate timer chains
+        # and duplicate NVML handles competing for the same device.
+        if self._monitor_dialog is not None:
+            try:
+                self._monitor_dialog.lift()
+                self._monitor_dialog.focus_set()
+                return
+            except Exception:
+                self._monitor_dialog = None
+        self._monitor_dialog = SystemMonitorDialog(self)
+        self._monitor_dialog.bind(
+            "<Destroy>", lambda _e: self._on_monitor_dialog_closed(_e),
+        )
+
+    def _on_monitor_dialog_closed(self, event) -> None:
+        if event.widget is self._monitor_dialog:
+            self._monitor_dialog = None
+
+    def _refresh_settings_summaries(self) -> None:
+        """If the Settings dialog is open, re-render its term/voice summaries."""
+        if self._settings_dialog is not None:
+            try:
+                self._settings_dialog._refresh_summaries()
+            except Exception:
+                pass
+
+    def _open_terms_dialog(self):
+        TermsDialog(self, self._config, self._refresh_settings_summaries)
 
     def _open_voices_dialog(self):
         # Pass the CURRENT HF token value (from the field, may be unsaved).
         # Enrollment worker needs HF auth to download pyannote/embedding.
         hf_token = self._hf_token_var.get().strip() or None
-        VoicesDialog(self, self._config, hf_token, self._update_voices_label)
-
-    def _update_voices_label(self):
-        from voice_library import voice_names
-        names = voice_names(self._config)
-        if names:
-            preview = ", ".join(names[:5])
-            if len(names) > 5:
-                preview += f"  ... (+{len(names) - 5})"
-            self._lbl_voices.configure(text=preview, text_color=TEXT_PRIMARY)
-        else:
-            self._lbl_voices.configure(
-                text="Нет сохранённых голосов", text_color=TEXT_SECONDARY,
-            )
+        VoicesDialog(
+            self, self._config, hf_token, self._refresh_settings_summaries,
+        )
 
     def _open_history_dialog(self):
         HistoryDialog(self, on_load_to_main=self._load_history_into_main)
@@ -388,7 +437,10 @@ class App(ctk.CTk):
         )
 
     def _open_cutter(self):
-        AudioCutter(self, audio_path=self._audio_path)
+        # Track the most recent cutter so theme changes can repaint it.
+        # AudioCutter doesn't need true singleton semantics — multiple
+        # opens are fine — we just keep the latest reference.
+        self._cutter = AudioCutter(self, audio_path=self._audio_path)
 
     # ── Recorder controls ──────────────────────────────────────
 
@@ -469,9 +521,9 @@ class App(ctk.CTk):
             pass
 
     def _toggle_diarization(self):
+        # Only the speaker-count menu lives on the main window; HF Token and
+        # device pickers were moved to the Settings dialog (own enable state).
         state = "normal" if self._diar_var.get() else "disabled"
-        self._hf_token_entry.configure(state=state)
-        self._btn_paste.configure(state=state)
         self._spk_count_menu.configure(state=state)
 
     def _on_speaker_count_changed(self, value: str) -> None:
@@ -491,6 +543,79 @@ class App(ctk.CTk):
         """Persist the normalization toggle. BooleanVar supplies no arg."""
         self._config["normalize_audio"] = bool(self._normalize_var.get())
         save_config(self._config)
+
+    def _on_transcribe_device_changed(self, value: str) -> None:
+        """
+        Persist the choice and invalidate the cached Transcriber.
+
+        Device is baked into the WhisperModel at load_model() time, so a
+        device change requires a fresh Transcriber. Setting to None here
+        causes _start_transcription's existing reuse-or-recreate check to
+        rebuild it with the new device on the next run.
+        """
+        self._config["transcribe_device"] = value
+        save_config(self._config)
+        self._transcriber = None
+
+    def _on_diarize_device_changed(self, value: str) -> None:
+        """
+        Persist the choice. The CPU-slow warning lives in the Settings dialog
+        and refreshes itself there; nothing to update on the main window.
+        """
+        self._config["diarize_device"] = value
+        save_config(self._config)
+
+    def _on_cloud_enabled_changed(self) -> None:
+        """Persist the cloud toggle. No widget reshuffling needed — the
+        Settings dialog rebuilds itself on next open, and _start_transcription
+        reads the var directly when starting a job."""
+        self._config["cloud_enabled"] = bool(self._cloud_enabled_var.get())
+        save_config(self._config)
+
+    def _on_cloud_provider_changed(self, value: str) -> None:
+        self._config["cloud_provider"] = value
+        save_config(self._config)
+
+    def _on_appearance_changed(self, value: str) -> None:
+        """
+        Switch theme live and persist the choice.
+
+        CustomTkinter's set_appearance_mode walks every CTk widget in the
+        process and re-resolves its ``(light, dark)`` tuple colors — that
+        covers the bulk of our UI. ``tk.Canvas`` instances (waveform,
+        sparklines) don't speak tuples and need explicit redraw; we
+        delegate that to each open child widget that knows about Canvas.
+        """
+        self._config["appearance_mode"] = value
+        save_config(self._config)
+        ctk.set_appearance_mode(APPEARANCE_MODES.get(value, "system"))
+        # Notify Canvas-using children. None of these are required to be
+        # open; the helper is a no-op when the dialog reference is None.
+        if self._monitor_dialog is not None:
+            try:
+                self._monitor_dialog._apply_theme()
+            except Exception:
+                pass
+        if self._cutter is not None:
+            try:
+                # Cutter window may have been closed already — winfo_exists
+                # protects against AttributeError on a destroyed widget.
+                if self._cutter.winfo_exists():
+                    self._cutter._apply_theme()
+            except Exception:
+                pass
+
+    def _paste_cloud_api_key(self) -> None:
+        """Same paste-from-clipboard helper as the HF token, scoped to
+        the cloud API key field."""
+        try:
+            text = self.clipboard_get().strip()
+            self._cloud_api_key_var.set(text)
+            if text:
+                self._config["cloud_api_key"] = text
+                save_config(self._config)
+        except Exception:
+            pass
 
     def _select_file(self):
         path = filedialog.askopenfilename(
@@ -515,10 +640,8 @@ class App(ctk.CTk):
         self._is_running = running
         state = "disabled" if running else "normal"
         self._btn_file.configure(state=state)
-        self._lang_menu.configure(state=state)
-        self._model_menu.configure(state=state)
         self._diar_check.configure(state=state)
-        self._normalize_check.configure(state=state)
+        self._btn_settings.configure(state=state)
         # The transcribe button doubles as cancel: enabled in both states.
         # When running, swaps to a red "Отмена" with _request_cancel command;
         # when idle, returns to the standard blue primary look.
@@ -535,13 +658,12 @@ class App(ctk.CTk):
                 command=self._start_transcription,
                 fg_color=BLUE, hover_color=BLUE_DIM,
             )
+        # Speaker-count menu mirrors the diarization-on-and-not-running rule.
+        # Other settings widgets live in the (modal) Settings dialog and the
+        # dialog blocks input while open, so they need no separate gating.
         if not running and self._diar_var.get():
-            self._hf_token_entry.configure(state="normal")
-            self._btn_paste.configure(state="normal")
             self._spk_count_menu.configure(state="normal")
         else:
-            self._hf_token_entry.configure(state="disabled")
-            self._btn_paste.configure(state="disabled")
             self._spk_count_menu.configure(state="disabled")
 
     def _request_cancel(self):
@@ -618,7 +740,29 @@ class App(ctk.CTk):
             self._config["hf_token"] = hf_token
             save_config(self._config)
 
-        if diarize and not hf_token:
+        # Resolve cloud-mode settings up front. cloud_provider is None when
+        # the toggle is off — that's the signal Transcriber.transcribe() uses
+        # to pick the local pipeline. When on, persist the API key the same
+        # way HF Token is persisted (typed values aren't auto-saved).
+        cloud_enabled = bool(self._cloud_enabled_var.get())
+        cloud_api_key = self._cloud_api_key_var.get().strip()
+        cloud_provider = self._cloud_provider_var.get() if cloud_enabled else None
+        if cloud_enabled and cloud_api_key:
+            self._config["cloud_api_key"] = cloud_api_key
+            save_config(self._config)
+
+        if cloud_enabled and not cloud_api_key:
+            messagebox.showwarning(
+                "Нужен API-ключ",
+                "Облако включено, но API-ключ провайдера не задан.\n\n"
+                "Открой Настройки → Облако и вставь ключ, либо выключи облако.",
+            )
+            self._set_running(False)
+            return
+
+        # HF Token is only required for the LOCAL diarization path. Cloud
+        # providers (AssemblyAI, …) carry their own auth via cloud_api_key.
+        if diarize and not hf_token and not cloud_enabled:
             messagebox.showwarning(
                 "Нужен токен",
                 "Для диаризации необходим Hugging Face токен.\n\n"
@@ -630,15 +774,40 @@ class App(ctk.CTk):
             self._set_running(False)
             return
 
-        if self._transcriber is None or self._transcriber.model_size != model_size:
-            self._transcriber = Transcriber(model_size=model_size)
+        # Resolve UI-label → backend device strings ("auto"/"cuda"/"cpu").
+        # Persistence already happened on dropdown change; we just read here.
+        transcribe_device = DEVICES[self._tr_device_var.get()]
+        diarize_device = DEVICES[self._di_device_var.get()]
+
+        # In cloud mode we don't load Whisper at all — the Transcriber object
+        # is still used as the orchestrator (it handles the cloud branch
+        # internally), but no GPU model is loaded. Skip the recreate logic
+        # to avoid unnecessary churn between cloud-mode runs.
+        if cloud_enabled:
+            if self._transcriber is None:
+                self._transcriber = Transcriber(
+                    model_size=model_size, device=transcribe_device,
+                )
+        else:
+            # Recreate Transcriber when model OR device changed — both are baked
+            # into WhisperModel at load_model() time.
+            needs_new_transcriber = (
+                self._transcriber is None
+                or self._transcriber.model_size != model_size
+                or self._transcriber._device != transcribe_device
+            )
+            if needs_new_transcriber:
+                self._transcriber = Transcriber(
+                    model_size=model_size, device=transcribe_device,
+                )
 
         thread = threading.Thread(
             target=self._run_transcription,
             args=(
                 self._audio_path, lang_code, diarize, hf_token, hotwords,
                 num_speakers, min_speakers, max_speakers, normalize_audio,
-                voice_lib_path,
+                voice_lib_path, diarize_device,
+                cloud_provider, cloud_api_key,
             ),
             daemon=True,
         )
@@ -671,20 +840,32 @@ class App(ctk.CTk):
                            min_speakers: int | None = None,
                            max_speakers: int | None = None,
                            normalize_audio: bool = True,
-                           voice_lib_path: str | None = None):
+                           voice_lib_path: str | None = None,
+                           diarize_device: str = "auto",
+                           cloud_provider: str | None = None,
+                           cloud_api_key: str | None = None):
         try:
-            self.after(0, self._lbl_status.configure,
-                       {"text": "Загрузка модели (первый раз может занять время)..."})
-            self._transcriber.load_model()
+            # In cloud mode we skip the local model load entirely. The
+            # status line clarifies which path is running so the user
+            # isn't surprised by "Загрузка модели..." that takes 0 s.
+            if cloud_provider:
+                self.after(0, self._switch_to_determinate)
+                self.after(0, self._lbl_status.configure,
+                           {"text": f"Транскрипция через {cloud_provider}..."})
+            else:
+                self.after(0, self._lbl_status.configure,
+                           {"text": "Загрузка модели (первый раз может занять время)..."})
+                self._transcriber.load_model()
+                device_label = "GPU (CUDA)" if self._transcriber.device == "cuda" else "CPU"
+                self.after(0, self._switch_to_determinate)
+                self.after(0, self._lbl_status.configure,
+                           {"text": f"Транскрипция на {device_label}..."})
 
-            device_label = "GPU (CUDA)" if self._transcriber.device == "cuda" else "CPU"
-            self.after(0, self._switch_to_determinate)
-            self.after(0, self._lbl_status.configure,
-                       {"text": f"Транскрипция на {device_label}..."})
             text = self._transcriber.transcribe(
                 audio_path,
                 language=language,
                 diarize=diarize,
+                diarize_device=diarize_device,
                 hf_token=hf_token,
                 hotwords=hotwords,
                 num_speakers=num_speakers,
@@ -692,6 +873,8 @@ class App(ctk.CTk):
                 max_speakers=max_speakers,
                 voice_lib_path=voice_lib_path,
                 normalize_audio=normalize_audio,
+                cloud_provider=cloud_provider,
+                cloud_api_key=cloud_api_key,
                 on_progress=self._on_progress,
                 on_status=self._on_status,
                 cancel_event=self._cancel_event,

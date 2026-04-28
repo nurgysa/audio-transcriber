@@ -5,5 +5,11 @@
   "language": "Авто-определение",
   "model": "large-v3 (максимум)",
   "speaker_count": "Авто",
-  "normalize_audio": true
+  "normalize_audio": true,
+  "transcribe_device": "Авто",
+  "diarize_device": "Авто",
+  "cloud_enabled": false,
+  "cloud_provider": "AssemblyAI",
+  "cloud_api_key": "",
+  "appearance_mode": "Системная"
 }
