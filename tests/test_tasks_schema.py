@@ -56,3 +56,45 @@ def test_task_status_round_trip_via_value():
     from tasks.schema import TaskStatus
     assert TaskStatus("sent") is TaskStatus.SENT
     assert TaskStatus("failed") is TaskStatus.FAILED
+
+
+# ── Task dataclass ────────────────────────────────────────────────────
+
+
+def test_task_minimum_creation_with_only_title():
+    """Title is the only required field; everything else has defaults."""
+    from tasks.schema import Task, Priority, TaskStatus
+    t = Task(title="Починить login bug")
+    assert t.title == "Починить login bug"
+    assert t.description == ""
+    assert t.priority is Priority.NONE
+    assert t.assignee_id is None
+    assert t.assignee_name is None
+    assert t.label_ids == []
+    assert t.label_names == []
+    assert t.due_date is None
+    assert t.selected is True
+    assert t.status is TaskStatus.PENDING
+    assert t.linear_issue_id is None
+    assert t.linear_issue_url is None
+    assert t.send_error is None
+    # local_id is auto-generated
+    assert isinstance(t.local_id, str)
+    assert len(t.local_id) == 36  # UUID4 format
+
+
+def test_task_local_ids_are_unique():
+    """Two Tasks created back-to-back must have different local_ids."""
+    from tasks.schema import Task
+    a = Task(title="A")
+    b = Task(title="B")
+    assert a.local_id != b.local_id
+
+
+def test_task_label_ids_default_is_independent_per_instance():
+    """Mutable defaults must use field(default_factory=list), not =[]."""
+    from tasks.schema import Task
+    a = Task(title="A")
+    b = Task(title="B")
+    a.label_ids.append("label-1")
+    assert b.label_ids == []   # if default leaked, this would also have label-1
