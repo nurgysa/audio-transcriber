@@ -36,3 +36,23 @@ def test_priority_lookup_unknown_falls_back_to_none():
     assert priority_from_string("critical") is Priority.NONE
     assert priority_from_string("") is Priority.NONE
     assert priority_from_string(None) is Priority.NONE  # type: ignore[arg-type]
+
+
+# ── TaskStatus ────────────────────────────────────────────────────────
+
+
+def test_task_status_string_values():
+    """TaskStatus values are strings (used as JSON-friendly tags)."""
+    from tasks.schema import TaskStatus
+    assert TaskStatus.PENDING.value == "pending"
+    assert TaskStatus.SENDING.value == "sending"
+    assert TaskStatus.SENT.value    == "sent"
+    assert TaskStatus.FAILED.value  == "failed"
+    assert TaskStatus.SKIPPED.value == "skipped"
+
+
+def test_task_status_round_trip_via_value():
+    """TaskStatus(value) → enum, used when loading tasks.json."""
+    from tasks.schema import TaskStatus
+    assert TaskStatus("sent") is TaskStatus.SENT
+    assert TaskStatus("failed") is TaskStatus.FAILED

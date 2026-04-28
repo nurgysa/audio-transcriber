@@ -10,7 +10,7 @@ Pure stdlib — no third-party deps, no I/O.
 """
 from __future__ import annotations
 
-from enum import IntEnum
+from enum import Enum, IntEnum
 
 
 class Priority(IntEnum):
@@ -23,6 +23,18 @@ class Priority(IntEnum):
     HIGH   = 2
     MEDIUM = 3
     LOW    = 4
+
+
+class TaskStatus(Enum):
+    """Send-to-Linear status for a Task. Used in Phase 6.3+.
+
+    Stored in tasks.json by .value (string) so JSON stays readable.
+    """
+    PENDING = "pending"   # not yet attempted
+    SENDING = "sending"   # in flight
+    SENT    = "sent"      # successfully created in Linear
+    FAILED  = "failed"    # last attempt failed (see send_error)
+    SKIPPED = "skipped"   # user unchecked the task
 
 
 def priority_from_string(name: str | None) -> Priority:
