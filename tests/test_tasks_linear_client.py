@@ -119,3 +119,49 @@ def test_bootstrap_returns_empty_team_list_when_user_has_no_teams():
     with patch.object(c._session, "post", return_value=fake):
         result = c.bootstrap()
     assert result["teams"] == []
+
+
+# ── team_context ──────────────────────────────────────────────────────
+
+
+def test_team_context_returns_members_and_labels():
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {
+        "data": {
+            "team": {
+                "members": {
+                    "nodes": [
+                        {"id": "u-1", "name": "Айдар", "displayName": "айдар", "email": "a@x.com"},
+                        {"id": "u-2", "name": "Нурғыса", "displayName": "ng", "email": "n@x.com"},
+                    ]
+                },
+                "labels": {
+                    "nodes": [
+                        {"id": "l-1", "name": "bug", "color": "#ff0000"},
+                        {"id": "l-2", "name": "mobile", "color": "#0000ff"},
+                    ]
+                },
+            }
+        }
+    }
+    c = LinearClient("lin_api_test")
+    with patch.object(c._session, "post", return_value=fake) as mock_post:
+        ctx = c.team_context("t-1")
+    body = mock_post.call_args.kwargs["json"]
+    assert body["variables"] == {"teamId": "t-1"}
+    assert len(ctx["members"]) == 2
+    assert ctx["members"][0]["name"] == "Айдар"
+    assert len(ctx["labels"]) == 2
+    assert ctx["labels"][0]["name"] == "bug"
+
+
+def test_team_context_raises_when_team_id_unknown():
+    """Linear returns data.team=null for invalid team IDs."""
+    fake = MagicMock()
+    fake.status_code = 200
+    fake.json.return_value = {"data": {"team": None}}
+    c = LinearClient("lin_api_test")
+    with patch.object(c._session, "post", return_value=fake):
+        with pytest.raises(LinearError, match="команда"):
+            c.team_context("t-bogus")

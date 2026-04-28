@@ -29,6 +29,15 @@ query Bootstrap {
 }
 """
 
+_TEAM_CONTEXT_QUERY = """
+query TeamContext($teamId: String!) {
+  team(id: $teamId) {
+    members { nodes { id name displayName email } }
+    labels  { nodes { id name color } }
+  }
+}
+"""
+
 
 class LinearError(Exception):
     """All Linear HTTP/GraphQL failures bubble up as this."""
@@ -131,3 +140,22 @@ class LinearClient:
         if not viewer:
             raise LinearError("Linear: viewer не найден в ответе")
         return viewer
+
+    def team_context(self, team_id: str) -> dict:
+        """Fetch members + labels for a team in a single GraphQL query.
+
+        Returns dict:
+            - members: list[{id, name, displayName, email}]
+            - labels: list[{id, name, color}]
+
+        Used by extractor to give the LLM authoritative context for assignee
+        and label resolution. NOT cached — team membership and labels change
+        frequently enough that staleness costs more than the network call.
+        """
+        data = self._graphql(_TEAM_CONTEXT_QUERY, {"teamId": team_id})
+        team = data.get("team")
+        if not team:
+            raise LinearError(f"Linear: команда {team_id} не найдена")
+        members = (team.get("members") or {}).get("nodes", [])
+        labels  = (team.get("labels")  or {}).get("nodes", [])
+        return {"members": members, "labels": labels}
