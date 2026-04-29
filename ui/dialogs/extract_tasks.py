@@ -160,7 +160,8 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # Editor state. _tasks is the canonical in-memory list; right form
         # binds to _tasks[_selected_index]. _meta carries extract context for
         # save_tasks (extracted_at, model, team_id, team_name, transcript_lang).
-        self._tasks: list = []      # list[Task]; populated post-extract or post-load
+        self._tasks: list = []      # list[Task]
+        self._task_rows: list = []  # list[_TaskRow] — populated by _render_task_list
         self._selected_index: Optional[int] = None
         self._meta: dict = {}       # populated post-extract or post-load
         # Undo stack (5 deep) of deepcopy(self._tasks) snapshots before destructive ops.
@@ -736,7 +737,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
         self._selected_index = new_index
 
-        if new_index is None or not (0 <= new_index < len(self._tasks)):
+        if (
+            new_index is None
+            or not (0 <= new_index < len(self._tasks))
+            or new_index >= len(self._task_rows)
+        ):
             self._set_editor_buttons_state(empty=True)
             self._clear_form_vars()
             return
@@ -813,6 +818,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                     task.assignee_id = m["id"]
                     task.assignee_name = name
                     break
+            else:
+                # Loop exhausted without finding a match — clear stale assignee_id
+                # to prevent the saved task from referencing a non-existent member.
+                task.assignee_id = None
+                task.assignee_name = None
 
         # Labels: comma-split, intersect with team-context label names.
         wanted_names = [
