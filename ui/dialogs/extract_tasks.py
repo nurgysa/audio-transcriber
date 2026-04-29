@@ -306,10 +306,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             if self._cancel_event.is_set():
                 return
 
-            self.after(0, self._status_label.configure, {
-                "text": f"Запрос к OpenRouter ({model})...",
-                "text_color": TEXT_SECONDARY,
-            })
+            if not self._cancel_event.is_set():
+                self.after(0, self._status_label.configure, {
+                    "text": f"Запрос к OpenRouter ({model})...",
+                    "text_color": TEXT_SECONDARY,
+                })
 
             result = extract(
                 transcript=self._transcript,
@@ -334,7 +335,8 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
             self._remember_recent_model(model)
 
-            self.after(0, self._on_extract_success, result, meta)
+            if not self._cancel_event.is_set():
+                self.after(0, self._on_extract_success, result, meta)
 
         except ExtractionError as e:
             # ExtractionError carries `raw_response` when extract() got a
