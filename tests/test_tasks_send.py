@@ -156,6 +156,7 @@ def test_send_iter_extracts_short_error_code_from_linear_message():
         (LinearError("Linear вернул 500: ..."), "500"),
         (LinearError("Нет соединения с Linear: ..."), "network"),
         (LinearError("Таймаут Linear (>30s)"), "timeout"),
+        (LinearError("Linear GraphQL: ошибка запроса"), "error"),
     ]
     for err, expected_code in cases:
         task.status = TaskStatus.PENDING
@@ -228,7 +229,7 @@ def test_send_iter_omits_priority_when_none():
         cancel_check=lambda: False,
     ))
     kwargs = linear.create_issue.call_args.kwargs
-    assert "priority" not in kwargs or kwargs["priority"] is None
+    assert "priority" not in kwargs
 
 
 def test_send_iter_passes_assignee_label_due_date():

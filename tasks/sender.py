@@ -76,7 +76,7 @@ def send_tasks_iter(
             issue = _create_one(linear_client, team_id, task)
         except LinearError as e:
             task.status = TaskStatus.FAILED
-            task.send_error = _short_error_code(str(e))
+            task.send_error = _short_error_code(str(e)) or "error"
             logger.warning(
                 "send failed for task %r (%s): %s",
                 task.local_id, task.title, e,
@@ -146,7 +146,8 @@ def _short_error_code(msg: str) -> str:
         anything else            → ""
     """
     msg_lower = msg.lower()
-    # HTTP status codes — word-boundary ensures "1400" doesn't match "400"
+    # HTTP status codes. \b ensures "1400" doesn't match "400" — between two
+    # digits there's no word boundary, so "1400" is treated as one token.
     m = re.search(r"\b(4\d\d|5\d\d)\b", msg)
     if m:
         return m.group(1)
