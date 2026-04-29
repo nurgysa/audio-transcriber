@@ -56,6 +56,81 @@ _RECENT_MODELS_LIMIT = 5
 # Imprecise (we don't know the actual model's price) but useful as a sanity-check.
 _COST_PER_1M_INPUT_TOKENS_USD = 3.0
 
+_PRIORITY_GLYPHS = {
+    "none":   "⚪",
+    "low":    "🔵",
+    "medium": "🟡",
+    "high":   "🟠",
+    "urgent": "🔴",
+}
+
+
+class _TaskRow(ctk.CTkFrame):
+    """One row in the left task list. Clicking the row body selects;
+    clicking the checkbox toggles selected without selecting.
+    """
+
+    def __init__(
+        self, parent, task, *, on_select, on_toggle,
+    ):
+        super().__init__(parent, fg_color="transparent", corner_radius=6)
+        self._task = task
+        self._on_select = on_select
+        self._on_toggle = on_toggle
+        self._selected_visual = False
+
+        self.grid_columnconfigure(1, weight=1)
+
+        self._var_checked = ctk.BooleanVar(value=task.selected)
+        self._check = ctk.CTkCheckBox(
+            self, text="", variable=self._var_checked,
+            command=self._handle_toggle,
+            checkbox_height=18, checkbox_width=18,
+            fg_color=BLUE_DIM, hover_color=BLUE_DIM, border_color=BORDER,
+        )
+        self._check.grid(row=0, column=0, padx=(8, 6), pady=4, sticky="w")
+
+        self._lbl_title = ctk.CTkLabel(
+            self, text=task.title or "(без заголовка)",
+            font=ctk.CTkFont(family=FONT, size=13, weight="bold"),
+            text_color=TEXT_PRIMARY, anchor="w",
+        )
+        self._lbl_title.grid(row=0, column=1, padx=2, pady=(4, 0), sticky="ew")
+
+        self._lbl_summary = ctk.CTkLabel(
+            self, text=self._summary_text(),
+            font=ctk.CTkFont(family=FONT, size=11),
+            text_color=TEXT_SECONDARY, anchor="w",
+        )
+        self._lbl_summary.grid(row=1, column=1, padx=2, pady=(0, 4), sticky="ew")
+
+        # Click anywhere on the body (except the checkbox) to select.
+        for w in (self, self._lbl_title, self._lbl_summary):
+            w.bind("<Button-1>", self._handle_click)
+
+    def _handle_click(self, _event=None):
+        self._on_select(self._task)
+
+    def _handle_toggle(self):
+        self._task.selected = bool(self._var_checked.get())
+        self._on_toggle()
+
+    def set_selected_visual(self, selected: bool) -> None:
+        self._selected_visual = selected
+        self.configure(fg_color=SURFACE if selected else "transparent")
+
+    def refresh_from_task(self) -> None:
+        """Re-render summary + title from the underlying task. Called after
+        edits to keep the row in sync with the form."""
+        self._lbl_title.configure(text=self._task.title or "(без заголовка)")
+        self._lbl_summary.configure(text=self._summary_text())
+        self._var_checked.set(self._task.selected)
+
+    def _summary_text(self) -> str:
+        glyph = _PRIORITY_GLYPHS.get(self._task.priority.name.lower(), "⚪")
+        assignee = self._task.assignee_name or "—"
+        return f"👤 {assignee}  ·  {glyph} {self._task.priority.name.lower()}"
+
 
 class ExtractTasksDialog(ctk.CTkToplevel):
     """Phase-6.2 master-detail editor scaffold (interactivity in Tasks 3–4)."""
@@ -327,10 +402,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._status_label.configure(
             text="Запрос к Linear (team_context)...", text_color=TEXT_SECONDARY,
         )
-        # TODO Task 6.2-3: replace with editor render
-        # self._json_box.configure(state="normal")
-        # self._json_box.delete("1.0", "end")
-        # self._json_box.configure(state="disabled")
+        # Clear the editor; will be re-populated by _on_extract_success.
+        self._tasks = []
+        self._selected_index = None
+        self._render_task_list()
+        self._clear_form_vars()
         self._saved_label.configure(text="")
 
         threading.Thread(
@@ -438,24 +514,16 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 text_color=GREEN,
             )
 
-        # Show what's actually on disk — guarantees "shown == saved".
-        from pathlib import Path
-        from tasks.persistence import RAW_FILENAME
-        try:
-            raw_path = Path(self._history_folder) / RAW_FILENAME
-            content = raw_path.read_text(encoding="utf-8")
-        except OSError:
-            # Fallback: serialize the in-memory result if the file vanished.
-            content = json.dumps(
-                {**meta, "tasks": [t.to_dict() for t in result["tasks"]]},
-                ensure_ascii=False, indent=2,
-            )
-
-        # TODO Task 6.2-3: replace with editor render
-        # self._json_box.configure(state="normal")
-        # self._json_box.delete("1.0", "end")
-        # self._json_box.insert("1.0", content)
-        # self._json_box.configure(state="disabled")
+        # Promote in-memory tasks to dialog state for the editor.
+        self._tasks = list(result["tasks"])
+        self._meta = dict(meta)
+        self._cached_members = result.get("members", [])
+        self._cached_labels = result.get("labels", [])
+        self._render_task_list()
+        if self._tasks:
+            self._set_selection(0)
+        # Persist tasks.json once with the fresh list.
+        self._save_tasks_to_disk()
 
         rel = os.path.relpath(
             os.path.join(self._history_folder, "tasks_raw.json"),
@@ -466,12 +534,12 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
     def _on_extract_error(self, msg: str, raw_response: Optional[str]) -> None:
         self._status_label.configure(text=f"✗ {msg}", text_color=RED)
-        # TODO Task 6.2-3: replace with editor render
-        # if raw_response:
-        #     self._json_box.configure(state="normal")
-        #     self._json_box.delete("1.0", "end")
-        #     self._json_box.insert("1.0", raw_response)
-        #     self._json_box.configure(state="disabled")
+        if raw_response:
+            import logging
+            logging.getLogger(__name__).warning(
+                "extract failed; raw LLM response logged for review:\n%s",
+                raw_response[:2000],
+            )
 
     def _set_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
@@ -610,7 +678,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             except Exception:
                 pass
 
-    # ── Editor handlers (stubs filled in subsequent tasks) ────────
+    # ── Editor handlers (stubs — filled in Task 4) ───────────────
 
     def _on_add_task(self) -> None:
         pass
@@ -624,8 +692,202 @@ class ExtractTasksDialog(ctk.CTkToplevel):
     def _on_delete_task(self) -> None:
         pass
 
+    # ── List rendering and selection ─────────────────────────────
+
+    def _render_task_list(self) -> None:
+        """Re-create row widgets from `self._tasks`. Called after extract,
+        load, add, or delete."""
+        for child in self._task_list.winfo_children():
+            child.destroy()
+        self._task_rows: list = []
+        for task in self._tasks:
+            row = _TaskRow(
+                self._task_list, task,
+                on_select=self._select_task,
+                on_toggle=self._on_row_toggle,
+            )
+            row.grid(sticky="ew", padx=2, pady=1)
+            self._task_rows.append(row)
+        # Re-apply visual selection if applicable.
+        if self._selected_index is not None and 0 <= self._selected_index < len(self._task_rows):
+            self._task_rows[self._selected_index].set_selected_visual(True)
+
+    def _select_task(self, task) -> None:
+        """User clicked a task row. Persist the previous selection's form
+        edits, then bind the form to the new task."""
+        # Persist current selection's pending edits before switching.
+        self._persist_current_task()
+
+        try:
+            new_index = self._tasks.index(task)
+        except ValueError:
+            return  # task no longer in list
+
+        self._set_selection(new_index)
+
+    def _set_selection(self, new_index: Optional[int]) -> None:
+        """Update visual selection + form binding."""
+        # Clear previous visual.
+        if self._selected_index is not None and self._selected_index < len(getattr(self, "_task_rows", [])):
+            try:
+                self._task_rows[self._selected_index].set_selected_visual(False)
+            except Exception:
+                pass
+
+        self._selected_index = new_index
+
+        if new_index is None or not (0 <= new_index < len(self._tasks)):
+            self._set_editor_buttons_state(empty=True)
+            self._clear_form_vars()
+            return
+
+        self._task_rows[new_index].set_selected_visual(True)
+        self._set_editor_buttons_state(empty=False)
+        self._bind_form_to(self._tasks[new_index])
+
+    def _on_row_toggle(self) -> None:
+        """A row's checkbox was toggled. The underlying task is already
+        updated; just save."""
+        self._save_tasks_to_disk()
+
+    # ── Form binding ─────────────────────────────────────────────
+
+    def _bind_form_to(self, task) -> None:
+        """Read `task` into form vars. Called on selection change."""
+        # Suspend trace handlers temporarily by setting a guard flag.
+        self._form_binding_in_progress = True
+        try:
+            self._var_title.set(task.title or "")
+            self._var_priority.set(task.priority.name.lower())
+            # Assignee dropdown values come from team_context. Refresh choices.
+            ctx_members = self._teams_context_members()
+            assignee_values = ["(нет)"] + [
+                m.get("displayName") or m.get("name", m["id"]) for m in ctx_members
+            ]
+            self._dropdown_assignee.configure(values=assignee_values)
+            current_assignee_label = "(нет)"
+            if task.assignee_id and task.assignee_name:
+                current_assignee_label = task.assignee_name
+            self._var_assignee.set(current_assignee_label)
+            # Labels: comma-separated names.
+            self._var_labels_csv.set(", ".join(task.label_names))
+            self._var_due_date.set(task.due_date or "")
+
+            # Description goes through textbox, not StringVar.
+            self._textbox_description.delete("1.0", "end")
+            self._textbox_description.insert("1.0", task.description or "")
+            # Reset the modified flag so the trace doesn't fire spuriously.
+            self._textbox_description.edit_modified(False)
+        finally:
+            self._form_binding_in_progress = False
+
+    def _clear_form_vars(self) -> None:
+        self._form_binding_in_progress = True
+        try:
+            self._var_title.set("")
+            self._var_priority.set("none")
+            self._var_assignee.set("(нет)")
+            self._var_labels_csv.set("")
+            self._var_due_date.set("")
+            self._textbox_description.delete("1.0", "end")
+            self._textbox_description.edit_modified(False)
+        finally:
+            self._form_binding_in_progress = False
+
+    def _form_to_task(self, task) -> None:
+        """Write form vars into `task`. Called from _persist_current_task."""
+        from tasks.schema import priority_from_string
+
+        task.title = self._var_title.get().strip()
+        task.priority = priority_from_string(self._var_priority.get())
+
+        # Assignee: resolve label back to id via team_context.
+        assignee_label = self._var_assignee.get()
+        if assignee_label == "(нет)" or not assignee_label.strip():
+            task.assignee_id = None
+            task.assignee_name = None
+        else:
+            for m in self._teams_context_members():
+                name = m.get("displayName") or m.get("name", m["id"])
+                if name == assignee_label:
+                    task.assignee_id = m["id"]
+                    task.assignee_name = name
+                    break
+
+        # Labels: comma-split, intersect with team-context label names.
+        wanted_names = [
+            n.strip() for n in self._var_labels_csv.get().split(",")
+            if n.strip()
+        ]
+        ctx_labels = self._teams_context_labels()
+        name_to_id = {lbl["name"]: lbl["id"] for lbl in ctx_labels}
+        clean_ids = []
+        clean_names = []
+        for n in wanted_names:
+            if n in name_to_id:
+                clean_ids.append(name_to_id[n])
+                clean_names.append(n)
+        task.label_ids = clean_ids
+        task.label_names = clean_names
+
+        due = self._var_due_date.get().strip()
+        task.due_date = due if due else None
+
+        task.description = self._textbox_description.get("1.0", "end").rstrip("\n")
+
+    def _persist_current_task(self) -> None:
+        """If a task is selected, write form back to it and save tasks.json.
+
+        Called on selection change, form change, and dialog close.
+        Also refreshes the task row so left list stays consistent.
+        """
+        if self._selected_index is None:
+            return
+        if not (0 <= self._selected_index < len(self._tasks)):
+            return
+        task = self._tasks[self._selected_index]
+        self._form_to_task(task)
+        # Refresh the visual row so title/summary stays in sync.
+        if self._selected_index < len(getattr(self, "_task_rows", [])):
+            try:
+                self._task_rows[self._selected_index].refresh_from_task()
+            except Exception:
+                pass
+        self._save_tasks_to_disk()
+
     def _on_form_changed(self) -> None:
-        pass
+        """Trace callback fired by var.trace_add. Suspends during programmatic
+        bind to avoid a save-loop on selection switch."""
+        if getattr(self, "_form_binding_in_progress", False):
+            return
+        self._persist_current_task()
 
     def _on_description_modified(self, _event=None) -> None:
-        pass
+        if getattr(self, "_form_binding_in_progress", False):
+            self._textbox_description.edit_modified(False)
+            return
+        if not self._textbox_description.edit_modified():
+            return
+        self._textbox_description.edit_modified(False)
+        self._persist_current_task()
+
+    def _teams_context_members(self) -> list:
+        """Return the members list from the most recent team_context fetch.
+
+        Cached after extract. If team_context wasn't fetched, return [].
+        """
+        return getattr(self, "_cached_members", [])
+
+    def _teams_context_labels(self) -> list:
+        return getattr(self, "_cached_labels", [])
+
+    def _save_tasks_to_disk(self) -> None:
+        """Write tasks.json. Errors logged but not raised — auto-save is best-effort."""
+        if not self._tasks or not self._meta:
+            return
+        try:
+            from tasks.persistence import save_tasks
+            save_tasks(self._history_folder, self._tasks, self._meta)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("auto-save tasks.json failed")

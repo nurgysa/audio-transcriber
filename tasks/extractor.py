@@ -293,6 +293,8 @@ def extract(
         "usage": response.get("usage", {}),
         "model": response.get("model", model),
         "raw_response": raw_content,
+        "members": members,
+        "labels": labels,
     }
 
 
