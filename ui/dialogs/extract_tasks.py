@@ -360,7 +360,10 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                         pass
                     if c in self._active_clients:
                         self._active_clients.remove(c)
-            self.after(0, self._set_busy, False)
+            # Guard the final UI update — if the user closed the dialog mid-run
+            # the toplevel is destroyed and self.after would raise TclError.
+            if not self._cancel_event.is_set():
+                self.after(0, self._set_busy, False)
 
     # ── UI updates marshalled from worker thread ─────────────────
 
