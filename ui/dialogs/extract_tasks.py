@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from collections import deque
 from datetime import datetime, timedelta
 from tkinter import messagebox
 from typing import Optional
@@ -28,7 +29,7 @@ from typing import Optional
 import customtkinter as ctk
 
 from theme import (
-    BG, BORDER, FONT, GREEN, INPUT_BG, RED, SURFACE,
+    BG, BLUE_DIM, BORDER, FONT, GREEN, INPUT_BG, RED, SURFACE,
     TEXT_PRIMARY, TEXT_SECONDARY,
 )
 from ui.widgets import label, option_menu, primary_button, tonal_button
@@ -79,6 +80,15 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._cancel_event = threading.Event()
         self._active_clients: list = []   # OpenRouter + Linear clients in flight
         self._teams: list[dict] = []      # populated by bootstrap
+
+        # Editor state. _tasks is the canonical in-memory list; right form
+        # binds to _tasks[_selected_index]. _meta carries extract context for
+        # save_tasks (extracted_at, model, team_id, team_name, transcript_lang).
+        self._tasks: list = []      # list[Task]; populated post-extract or post-load
+        self._selected_index: Optional[int] = None
+        self._meta: dict = {}       # populated post-extract or post-load
+        # Undo stack (5 deep) of deepcopy(self._tasks) snapshots before destructive ops.
+        self._undo_stack: deque = deque(maxlen=5)
 
         self.title("Извлечение задач")
         self.geometry("640x520")
@@ -148,14 +158,57 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._status_label.grid(row=1, column=0, padx=18, pady=(2, 4), sticky="ew")
         self._update_cost_hint()
 
-        # --- JSON textbox (read-only after extract) ---
-        self._json_box = ctk.CTkTextbox(
-            self, wrap="word", corner_radius=10,
-            fg_color=SURFACE, text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(family="Consolas", size=12),
+        # --- Editor: master-detail layout ---
+        editor = ctk.CTkFrame(self, fg_color="transparent")
+        editor.grid(row=2, column=0, padx=16, pady=(2, 4), sticky="nsew")
+        editor.grid_columnconfigure(0, weight=1, minsize=300)
+        editor.grid_columnconfigure(1, weight=2, minsize=400)
+        editor.grid_rowconfigure(0, weight=1)
+
+        # Left: scrollable list of task rows + bottom action bar.
+        left_panel = ctk.CTkFrame(editor, fg_color=SURFACE, corner_radius=10)
+        left_panel.grid(row=0, column=0, padx=(0, 6), sticky="nsew")
+        left_panel.grid_rowconfigure(0, weight=1)
+        left_panel.grid_columnconfigure(0, weight=1)
+
+        self._task_list = ctk.CTkScrollableFrame(
+            left_panel, fg_color="transparent", corner_radius=0,
         )
-        self._json_box.grid(row=2, column=0, padx=16, pady=(2, 4), sticky="nsew")
-        self._json_box.configure(state="disabled")  # nothing to show yet
+        self._task_list.grid(row=0, column=0, padx=4, pady=4, sticky="nsew")
+        self._task_list.grid_columnconfigure(0, weight=1)
+
+        # Action bar inside left panel: Add / SelectAll / SelectNone / Delete
+        list_actions = ctk.CTkFrame(left_panel, fg_color="transparent")
+        list_actions.grid(row=1, column=0, padx=4, pady=(0, 4), sticky="ew")
+        list_actions.grid_columnconfigure(0, weight=1)
+        list_actions.grid_columnconfigure(1, weight=1)
+        list_actions.grid_columnconfigure(2, weight=1)
+        list_actions.grid_columnconfigure(3, weight=1)
+        self._btn_add = tonal_button(
+            list_actions, text="+ Добавить", command=self._on_add_task, width=110,
+        )
+        self._btn_add.grid(row=0, column=0, padx=2, sticky="ew")
+        self._btn_select_all = tonal_button(
+            list_actions, text="✓ Все", command=self._on_select_all, width=70,
+        )
+        self._btn_select_all.grid(row=0, column=1, padx=2, sticky="ew")
+        self._btn_select_none = tonal_button(
+            list_actions, text="✗ Снять", command=self._on_select_none, width=80,
+        )
+        self._btn_select_none.grid(row=0, column=2, padx=2, sticky="ew")
+        self._btn_delete = tonal_button(
+            list_actions, text="🗑 Удалить", command=self._on_delete_task, width=100,
+        )
+        self._btn_delete.grid(row=0, column=3, padx=2, sticky="ew")
+
+        # Right: form for editing selected task.
+        self._form_panel = ctk.CTkFrame(editor, fg_color=SURFACE, corner_radius=10)
+        self._form_panel.grid(row=0, column=1, padx=(6, 0), sticky="nsew")
+        self._form_panel.grid_columnconfigure(0, weight=1)
+        self._build_form()
+
+        # Disable buttons that need a selection until something is selected.
+        self._set_editor_buttons_state(empty=True)
 
         # --- Footer: saved-path + close ---
         footer = ctk.CTkFrame(self, fg_color="transparent")
@@ -273,9 +326,10 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._status_label.configure(
             text="Запрос к Linear (team_context)...", text_color=TEXT_SECONDARY,
         )
-        self._json_box.configure(state="normal")
-        self._json_box.delete("1.0", "end")
-        self._json_box.configure(state="disabled")
+        # TODO Task 6.2-3: replace with editor render
+        # self._json_box.configure(state="normal")
+        # self._json_box.delete("1.0", "end")
+        # self._json_box.configure(state="disabled")
         self._saved_label.configure(text="")
 
         threading.Thread(
@@ -396,10 +450,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 ensure_ascii=False, indent=2,
             )
 
-        self._json_box.configure(state="normal")
-        self._json_box.delete("1.0", "end")
-        self._json_box.insert("1.0", content)
-        self._json_box.configure(state="disabled")
+        # TODO Task 6.2-3: replace with editor render
+        # self._json_box.configure(state="normal")
+        # self._json_box.delete("1.0", "end")
+        # self._json_box.insert("1.0", content)
+        # self._json_box.configure(state="disabled")
 
         rel = os.path.relpath(
             os.path.join(self._history_folder, "tasks_raw.json"),
@@ -410,11 +465,12 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
     def _on_extract_error(self, msg: str, raw_response: Optional[str]) -> None:
         self._status_label.configure(text=f"✗ {msg}", text_color=RED)
-        if raw_response:
-            self._json_box.configure(state="normal")
-            self._json_box.delete("1.0", "end")
-            self._json_box.insert("1.0", raw_response)
-            self._json_box.configure(state="disabled")
+        # TODO Task 6.2-3: replace with editor render
+        # if raw_response:
+        #     self._json_box.configure(state="normal")
+        #     self._json_box.delete("1.0", "end")
+        #     self._json_box.insert("1.0", raw_response)
+        #     self._json_box.configure(state="disabled")
 
     def _set_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
@@ -449,3 +505,125 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         except Exception:
             pass
         self.destroy()
+
+    # ── Right-form builder ────────────────────────────────────────
+
+    def _build_form(self) -> None:
+        """Build the right-side form. Variables are owned by the form
+        and bound to the selected task via _bind_form_to / _form_to_task."""
+        f = self._form_panel
+
+        # StringVar/BooleanVar instances (re-bound on selection change).
+        self._var_title       = ctk.StringVar()
+        self._var_description = ctk.StringVar()
+        self._var_priority    = ctk.StringVar(value="none")
+        self._var_assignee    = ctk.StringVar(value="(нет)")
+        self._var_due_date    = ctk.StringVar()
+
+        row = 0
+        label(f, "Заголовок").grid(row=row, column=0, padx=12, pady=(12, 2), sticky="w")
+        row += 1
+        self._entry_title = ctk.CTkEntry(
+            f, textvariable=self._var_title, height=36,
+            font=ctk.CTkFont(family=FONT, size=13),
+            fg_color=INPUT_BG, text_color=TEXT_PRIMARY, border_color=BORDER,
+        )
+        self._entry_title.grid(row=row, column=0, padx=12, pady=(0, 8), sticky="ew")
+        self._var_title.trace_add("write", lambda *_: self._on_form_changed())
+
+        row += 1
+        label(f, "Приоритет").grid(row=row, column=0, padx=12, pady=(0, 2), sticky="w")
+        row += 1
+        self._dropdown_priority = ctk.CTkOptionMenu(
+            f, variable=self._var_priority,
+            values=["none", "low", "medium", "high", "urgent"],
+            command=lambda _v: self._on_form_changed(),
+            fg_color=INPUT_BG, text_color=TEXT_PRIMARY, button_color=BORDER,
+            font=ctk.CTkFont(family=FONT, size=12),
+        )
+        self._dropdown_priority.grid(row=row, column=0, padx=12, pady=(0, 8), sticky="ew")
+
+        row += 1
+        label(f, "Исполнитель").grid(row=row, column=0, padx=12, pady=(0, 2), sticky="w")
+        row += 1
+        self._dropdown_assignee = ctk.CTkOptionMenu(
+            f, variable=self._var_assignee,
+            values=["(нет)"],
+            command=lambda _v: self._on_form_changed(),
+            fg_color=INPUT_BG, text_color=TEXT_PRIMARY, button_color=BORDER,
+            font=ctk.CTkFont(family=FONT, size=12),
+        )
+        self._dropdown_assignee.grid(row=row, column=0, padx=12, pady=(0, 8), sticky="ew")
+
+        row += 1
+        label(f, "Метки").grid(row=row, column=0, padx=12, pady=(0, 2), sticky="w")
+        row += 1
+        # For Phase 6.2, labels are displayed as a comma-joined string in an
+        # entry. Toggle UI (chips with X buttons) is post-6.4 polish.
+        self._var_labels_csv = ctk.StringVar()
+        self._entry_labels = ctk.CTkEntry(
+            f, textvariable=self._var_labels_csv, height=36,
+            font=ctk.CTkFont(family=FONT, size=12),
+            fg_color=INPUT_BG, text_color=TEXT_PRIMARY, border_color=BORDER,
+            placeholder_text="метка1, метка2 (только из team-labels)",
+        )
+        self._entry_labels.grid(row=row, column=0, padx=12, pady=(0, 8), sticky="ew")
+        self._var_labels_csv.trace_add("write", lambda *_: self._on_form_changed())
+
+        row += 1
+        label(f, "Дата (YYYY-MM-DD)").grid(row=row, column=0, padx=12, pady=(0, 2), sticky="w")
+        row += 1
+        self._entry_due = ctk.CTkEntry(
+            f, textvariable=self._var_due_date, height=36,
+            font=ctk.CTkFont(family=FONT, size=12),
+            fg_color=INPUT_BG, text_color=TEXT_PRIMARY, border_color=BORDER,
+            placeholder_text="напр. 2026-05-15",
+        )
+        self._entry_due.grid(row=row, column=0, padx=12, pady=(0, 8), sticky="ew")
+        self._var_due_date.trace_add("write", lambda *_: self._on_form_changed())
+
+        row += 1
+        label(f, "Описание").grid(row=row, column=0, padx=12, pady=(0, 2), sticky="w")
+        row += 1
+        f.grid_rowconfigure(row, weight=1)
+        self._textbox_description = ctk.CTkTextbox(
+            f, wrap="word", height=80,
+            font=ctk.CTkFont(family=FONT, size=12),
+            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
+        )
+        self._textbox_description.grid(row=row, column=0, padx=12, pady=(0, 12), sticky="nsew")
+        # CTkTextbox doesn't take a textvariable — we read it on save.
+        self._textbox_description.bind("<<Modified>>", self._on_description_modified)
+
+    def _set_editor_buttons_state(self, *, empty: bool) -> None:
+        """Toggle right-form widget enable + delete-button enable based on selection."""
+        state = "disabled" if empty else "normal"
+        for w in (
+            self._entry_title, self._dropdown_priority,
+            self._dropdown_assignee, self._entry_labels, self._entry_due,
+            self._textbox_description, self._btn_delete,
+        ):
+            try:
+                w.configure(state=state)
+            except Exception:
+                pass
+
+    # ── Editor handlers (stubs filled in subsequent tasks) ────────
+
+    def _on_add_task(self) -> None:
+        pass
+
+    def _on_select_all(self) -> None:
+        pass
+
+    def _on_select_none(self) -> None:
+        pass
+
+    def _on_delete_task(self) -> None:
+        pass
+
+    def _on_form_changed(self) -> None:
+        pass
+
+    def _on_description_modified(self, _event=None) -> None:
+        pass
