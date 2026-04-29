@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import webbrowser
 from collections import deque
 from datetime import datetime, timedelta
 from tkinter import messagebox
@@ -109,6 +110,15 @@ class _TaskRow(ctk.CTkFrame):
             w.bind("<Button-1>", self._handle_click)
 
     def _handle_click(self, _event=None):
+        # If the task has been sent to Linear, a click opens the issue page;
+        # the editor form is irrelevant at that point.
+        from tasks.schema import TaskStatus
+        if (
+            self._task.status is TaskStatus.SENT
+            and self._task.linear_issue_url
+        ):
+            webbrowser.open(self._task.linear_issue_url)
+            return
         self._on_select(self._task)
 
     def _handle_toggle(self):
@@ -125,6 +135,63 @@ class _TaskRow(ctk.CTkFrame):
         self._lbl_title.configure(text=self._task.title or "(без заголовка)")
         self._lbl_summary.configure(text=self._summary_text())
         self._var_checked.set(self._task.selected)
+        # Re-apply any status badge so the row stays consistent after a
+        # destructive op (delete + undo, in particular).
+        self.set_status_visual(
+            self._task.status,
+            identifier=self._task.linear_issue_id,
+            error_code=self._task.send_error,
+        )
+
+    def set_status_visual(
+        self, status, *,
+        identifier: Optional[str] = None,
+        error_code: Optional[str] = None,
+    ) -> None:
+        """Replace the checkbox with a status badge after send begins.
+
+        PENDING → restore checkbox; SENDING/SENT/FAILED/SKIPPED → badge.
+        Identifier (e.g. ``ENG-1234``) appended to the summary when SENT.
+        """
+        from tasks.schema import TaskStatus
+        if status is TaskStatus.PENDING:
+            if hasattr(self, "_status_badge"):
+                self._status_badge.grid_remove()
+            self._check.grid()
+            # Restore the plain summary in case it had ``· ENG-…`` appended.
+            self._lbl_summary.configure(text=self._summary_text())
+            return
+
+        if not hasattr(self, "_status_badge"):
+            self._status_badge = ctk.CTkLabel(
+                self, text="", width=28,
+                font=ctk.CTkFont(family=FONT, size=14, weight="bold"),
+                anchor="center",
+            )
+            self._status_badge.grid(
+                row=0, column=0, padx=(8, 6), pady=4, sticky="w",
+            )
+
+        self._check.grid_remove()
+        self._status_badge.grid()
+
+        if status is TaskStatus.SENDING:
+            self._status_badge.configure(text="⏳", text_color=BLUE_DIM)
+            self._lbl_summary.configure(text=self._summary_text())
+        elif status is TaskStatus.SENT:
+            self._status_badge.configure(text="✓", text_color=GREEN)
+            base = self._summary_text()
+            if identifier:
+                self._lbl_summary.configure(text=f"{base}  ·  {identifier}")
+            else:
+                self._lbl_summary.configure(text=base)
+        elif status is TaskStatus.FAILED:
+            code = error_code or "?"
+            self._status_badge.configure(text=f"⚠{code}", text_color=RED)
+            self._lbl_summary.configure(text=self._summary_text())
+        elif status is TaskStatus.SKIPPED:
+            self._status_badge.configure(text="—", text_color=TEXT_SECONDARY)
+            self._lbl_summary.configure(text=self._summary_text())
 
     def _summary_text(self) -> str:
         glyph = _PRIORITY_GLYPHS.get(self._task.priority.name.lower(), "⚪")
@@ -302,15 +369,28 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # Disable buttons that need a selection until something is selected.
         self._set_editor_buttons_state(empty=True)
 
-        # --- Footer: saved-path + close ---
+        # --- Footer: saved-path + Send / Retry / Close ---
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=3, column=0, padx=16, pady=(2, 14), sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
         self._saved_label = label(footer, "", anchor="w")
         self._saved_label.grid(row=0, column=0, sticky="ew")
+
+        self._btn_send = primary_button(
+            footer, text="Отправить выбранные (0)",
+            command=self._on_send_clicked, width=220, state="disabled",
+        )
+        self._btn_send.grid(row=0, column=1, padx=(8, 4), sticky="e")
+
+        self._btn_retry = tonal_button(
+            footer, text="Повторить упавшие",
+            command=self._on_retry_clicked, width=170, state="disabled",
+        )
+        self._btn_retry.grid(row=0, column=2, padx=(0, 4), sticky="e")
+
         tonal_button(
             footer, text="Закрыть", command=self._on_close, width=110,
-        ).grid(row=0, column=1, sticky="e")
+        ).grid(row=0, column=3, sticky="e")
 
     def _update_cost_hint(self) -> None:
         """Heuristic: ~chars/4 input tokens × Sonnet pricing × 1.3 (output)."""
@@ -563,6 +643,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                     self._btn_add, self._btn_select_all,
                     self._btn_select_none, self._btn_delete):
             btn.configure(state=state)
+        # Send/Retry are only force-disabled while busy; their re-enable
+        # state comes from _refresh_send_button_label (pending/failed counts).
+        if busy:
+            for btn in (self._btn_send, self._btn_retry):
+                btn.configure(state="disabled")
 
     def _remember_recent_model(self, slug: str) -> None:
         """If `slug` is custom (not in curated list), prepend to FIFO-5 list."""
@@ -742,6 +827,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
     def _render_task_list(self) -> None:
         """Re-create row widgets from `self._tasks`. Called after extract,
         load, add, or delete."""
+        from tasks.schema import TaskStatus
         for child in self._task_list.winfo_children():
             child.destroy()
         self._task_rows: list = []
@@ -752,10 +838,20 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 on_toggle=self._on_row_toggle,
             )
             row.grid(sticky="ew", padx=2, pady=1)
+            # Re-apply non-PENDING status badges so re-opened/restored sessions
+            # render their badges instead of a fresh checkbox.
+            if task.status is not TaskStatus.PENDING:
+                row.set_status_visual(
+                    task.status,
+                    identifier=task.linear_issue_id,
+                    error_code=task.send_error,
+                )
             self._task_rows.append(row)
         # Re-apply visual selection if applicable.
         if self._selected_index is not None and 0 <= self._selected_index < len(self._task_rows):
             self._task_rows[self._selected_index].set_selected_visual(True)
+        # Refresh Send/Retry counts after the list shape changes.
+        self._refresh_send_button_label()
 
     def _select_task(self, task) -> None:
         """User clicked a task row. Persist the previous selection's form
@@ -937,14 +1033,174 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
     def _save_tasks_to_disk(self) -> None:
         """Write tasks.json. Errors logged but not raised — auto-save is best-effort."""
-        if not self._tasks or not self._meta:
+        if self._tasks and self._meta:
+            try:
+                from tasks.persistence import save_tasks
+                save_tasks(self._history_folder, self._tasks, self._meta)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("auto-save tasks.json failed")
+        # Refresh Send/Retry button labels regardless of disk-save outcome
+        # — central post-mutation hook (toggle, edit, add, delete, undo).
+        self._refresh_send_button_label()
+
+    def _refresh_send_button_label(self) -> None:
+        """Update Send button text+state from pending+selected count, and
+        Retry button state from failed count. Safe to call before _build_ui
+        completes — silently skips if buttons aren't built yet."""
+        from tasks.schema import TaskStatus
+        btn_send = getattr(self, "_btn_send", None)
+        btn_retry = getattr(self, "_btn_retry", None)
+        if btn_send is None or btn_retry is None:
             return
+        pending = sum(
+            1 for t in self._tasks
+            if t.selected and t.status is TaskStatus.PENDING
+        )
+        failed = sum(
+            1 for t in self._tasks if t.status is TaskStatus.FAILED
+        )
+        btn_send.configure(
+            text=f"Отправить выбранные ({pending})",
+            state="normal" if pending > 0 else "disabled",
+        )
+        btn_retry.configure(
+            state="normal" if failed > 0 else "disabled",
+        )
+
+    # ── Send to Linear (Phase 6.3) ────────────────────────────────
+
+    def _on_send_clicked(self) -> None:
+        self._start_send(retry_failed=False)
+
+    def _on_retry_clicked(self) -> None:
+        self._start_send(retry_failed=True)
+
+    def _start_send(self, *, retry_failed: bool) -> None:
+        """Spin up the send worker. Saves any pending form edits first so
+        the in-memory tasks list matches what's on disk before sending."""
+        team_id = self._meta.get("team_id") if self._meta else None
+        if not team_id:
+            messagebox.showwarning(
+                "Нет команды",
+                "Не могу отправить — потерян контекст команды. "
+                "Перезапустите извлечение.",
+            )
+            return
+
+        api_key = (self._config.get("linear_api_key") or "").strip()
+        if not api_key:
+            messagebox.showwarning(
+                "Нет ключа Linear",
+                "Добавьте Linear API ключ в Settings и повторите.",
+            )
+            return
+
+        # Flush any pending form edits into the in-memory task before sending.
         try:
-            from tasks.persistence import save_tasks
-            save_tasks(self._history_folder, self._tasks, self._meta)
+            self._persist_current_task()
         except Exception:
             import logging
-            logging.getLogger(__name__).exception("auto-save tasks.json failed")
+            logging.getLogger(__name__).exception("persist before send failed")
+
+        self._set_busy(True)
+        self._status_label.configure(
+            text="Отправка в Linear...", text_color=TEXT_SECONDARY,
+        )
+        threading.Thread(
+            target=self._run_send_worker,
+            args=(team_id, api_key, retry_failed),
+            daemon=True,
+        ).start()
+
+    def _run_send_worker(
+        self, team_id: str, api_key: str, retry_failed: bool,
+    ) -> None:
+        """Worker thread: drive ``send_tasks_iter`` against a fresh LinearClient.
+
+        Status updates flow through ``_on_send_status_change`` (worker thread:
+        atomic save_tasks + ``self.after`` for UI). Final completion is
+        marshalled to ``_on_send_finished`` on the main thread.
+        """
+        from tasks.linear_client import LinearClient
+        from tasks.sender import send_tasks_iter
+
+        linear = LinearClient(api_key)
+        self._active_clients.append(linear)
+        error_msg: Optional[str] = None
+        try:
+            for _ in send_tasks_iter(
+                self._tasks,
+                team_id=team_id,
+                linear_client=linear,
+                on_status_change=self._on_send_status_change,
+                cancel_check=self._cancel_event.is_set,
+                retry_failed=retry_failed,
+            ):
+                pass  # generator drives the work; yielded values are for tests
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception("send worker crashed")
+            error_msg = f"{type(e).__name__}: {e}"
+        finally:
+            try:
+                linear.close()
+            except Exception:
+                pass
+            if linear in self._active_clients:
+                self._active_clients.remove(linear)
+
+        if not self._cancel_event.is_set():
+            self.after(0, self._on_send_finished, error_msg)
+
+    def _on_send_status_change(self, task, new_status, **_kw) -> None:
+        """Callback from sender (worker thread). Save tasks.json after
+        every transition so a crash mid-send leaves accurate state on disk,
+        then marshal a UI update onto the main thread."""
+        if self._cancel_event.is_set():
+            return
+        # Atomic disk write — safe to call from any thread.
+        if self._tasks and self._meta:
+            try:
+                from tasks.persistence import save_tasks
+                save_tasks(self._history_folder, self._tasks, self._meta)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "save_tasks during send failed",
+                )
+        if not self._cancel_event.is_set():
+            self.after(0, self._update_row_status, task)
+
+    def _update_row_status(self, task) -> None:
+        """Main-thread UI update for a single row's status badge."""
+        for row in getattr(self, "_task_rows", []):
+            if row._task is task:
+                row.set_status_visual(
+                    task.status,
+                    identifier=task.linear_issue_id,
+                    error_code=task.send_error,
+                )
+                break
+        # Live update of the count on the Send button as tasks transition.
+        self._refresh_send_button_label()
+
+    def _on_send_finished(self, error_msg: Optional[str]) -> None:
+        """Main-thread completion callback for the send worker."""
+        self._set_busy(False)
+        self._refresh_send_button_label()
+        from tasks.schema import TaskStatus
+        if error_msg:
+            self._status_label.configure(
+                text=f"✗ Отправка прервана: {error_msg}", text_color=RED,
+            )
+            return
+        sent = sum(1 for t in self._tasks if t.status is TaskStatus.SENT)
+        failed = sum(1 for t in self._tasks if t.status is TaskStatus.FAILED)
+        self._status_label.configure(
+            text=f"✓ Отправлено: {sent} · ✗ Ошибок: {failed}",
+            text_color=GREEN if failed == 0 else RED,
+        )
 
     # ── Undo stack ────────────────────────────────────────────────
 
