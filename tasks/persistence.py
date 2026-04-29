@@ -82,3 +82,57 @@ def load_tasks_raw(folder: str) -> dict:
 
     raw_tasks = data.pop("tasks", [])
     return {**data, "tasks": [Task.from_dict(t) for t in raw_tasks]}
+
+
+MUTABLE_FILENAME = "tasks.json"
+
+
+def save_tasks(folder: str, tasks: list[Task], meta: dict) -> None:
+    """Atomically write ``<folder>/tasks.json`` — the mutable user-state snapshot.
+
+    Differs from ``save_tasks_raw`` in two ways:
+    1. Persists the full ``Task.to_dict()`` (incl. selected/status/linear_*).
+    2. Adds an ``edited_at`` timestamp separate from ``extracted_at``.
+
+    ``meta`` keys: extracted_at, model, team_id, team_name, transcript_lang.
+    """
+    from datetime import datetime
+
+    target_dir = Path(folder)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        **meta,
+        "edited_at": datetime.now().isoformat(timespec="seconds"),
+        "tasks": [t.to_dict() for t in tasks],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, indent=2)
+
+    final = target_dir / MUTABLE_FILENAME
+    tmp = target_dir / f".{MUTABLE_FILENAME}.tmp"
+    try:
+        tmp.write_text(encoded, encoding="utf-8")
+        os.replace(tmp, final)
+    except OSError as e:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise PersistenceError(f"Не удалось записать {MUTABLE_FILENAME}: {e}") from e
+
+
+def load_tasks(folder: str) -> dict:
+    """Read ``<folder>/tasks.json`` and return ``{**meta, 'tasks': [Task, ...]}``.
+
+    Raises PersistenceError if missing or malformed.
+    """
+    path = Path(folder) / MUTABLE_FILENAME
+    if not path.is_file():
+        raise PersistenceError(f"{MUTABLE_FILENAME} not found in {folder}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        raise PersistenceError(f"{MUTABLE_FILENAME} malformed in {folder}: {e}") from e
+
+    raw_tasks = data.pop("tasks", [])
+    return {**data, "tasks": [Task.from_dict(t) for t in raw_tasks]}

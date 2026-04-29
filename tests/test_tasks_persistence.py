@@ -116,3 +116,88 @@ def test_load_raises_persistence_error_on_malformed_json(tmp_path: Path):
     (tmp_path / RAW_FILENAME).write_text("not json at all", encoding="utf-8")
     with pytest.raises(PersistenceError, match="malformed"):
         load_tasks_raw(str(tmp_path))
+
+
+# ── save_tasks / load_tasks ──────────────────────────────────────────
+
+
+from tasks.persistence import (
+    MUTABLE_FILENAME, load_tasks, save_tasks,
+)
+from tasks.schema import TaskStatus
+
+
+def _full_state_tasks() -> list[Task]:
+    return [
+        Task(
+            title="A", priority=Priority.HIGH, assignee_id="u1",
+            assignee_name="Айдар", label_ids=["l1"], label_names=["bug"],
+            selected=True, status=TaskStatus.SENT,
+            linear_issue_id="ENG-101", linear_issue_url="https://linear.app/x/ENG-101",
+        ),
+        Task(
+            title="B", description="multi\nline",
+            selected=False, status=TaskStatus.SKIPPED,
+        ),
+    ]
+
+
+def test_save_tasks_writes_full_state(tmp_path: Path):
+    """tasks.json includes user-state fields (selected, status, linear_*) — unlike tasks_raw.json."""
+    save_tasks(str(tmp_path), _full_state_tasks(), _sample_meta())
+    data = json.loads((tmp_path / MUTABLE_FILENAME).read_text(encoding="utf-8"))
+    sample = data["tasks"][0]
+    # Full state present:
+    assert sample["selected"] is True
+    assert sample["status"] == "sent"
+    assert sample["linear_issue_id"] == "ENG-101"
+    assert sample["linear_issue_url"] == "https://linear.app/x/ENG-101"
+    # Same meta keys as raw:
+    assert data["model"] == "anthropic/claude-sonnet-4.5"
+    assert data["team_id"] == "team-uuid"
+
+
+def test_save_tasks_includes_edited_at_timestamp(tmp_path: Path):
+    """tasks.json adds an `edited_at` field separate from `extracted_at`."""
+    save_tasks(str(tmp_path), _full_state_tasks(), _sample_meta())
+    data = json.loads((tmp_path / MUTABLE_FILENAME).read_text(encoding="utf-8"))
+    assert "edited_at" in data
+    assert isinstance(data["edited_at"], str)
+    # Should be ISO-8601-ish:
+    assert "T" in data["edited_at"]
+
+
+def test_save_tasks_is_atomic(tmp_path: Path, monkeypatch):
+    """Same atomic-write invariant as save_tasks_raw."""
+    save_tasks(str(tmp_path), _full_state_tasks(), _sample_meta())
+    original = (tmp_path / MUTABLE_FILENAME).read_text(encoding="utf-8")
+
+    import tasks.persistence as P
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated mid-encode failure")
+
+    monkeypatch.setattr(P.json, "dumps", boom)
+    with pytest.raises(RuntimeError):
+        save_tasks(str(tmp_path), [Task(title="X")], _sample_meta())
+
+    # Original tasks.json untouched:
+    assert (tmp_path / MUTABLE_FILENAME).read_text(encoding="utf-8") == original
+
+
+def test_load_tasks_round_trips_full_state(tmp_path: Path):
+    save_tasks(str(tmp_path), _full_state_tasks(), _sample_meta())
+    loaded = load_tasks(str(tmp_path))
+    assert loaded["model"] == "anthropic/claude-sonnet-4.5"
+    out = loaded["tasks"]
+    assert len(out) == 2
+    assert out[0].selected is True
+    assert out[0].status is TaskStatus.SENT
+    assert out[0].linear_issue_id == "ENG-101"
+    assert out[1].selected is False
+    assert out[1].status is TaskStatus.SKIPPED
+
+
+def test_load_tasks_raises_on_missing_file(tmp_path: Path):
+    with pytest.raises(PersistenceError, match="not found"):
+        load_tasks(str(tmp_path))
