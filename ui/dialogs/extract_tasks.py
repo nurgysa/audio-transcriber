@@ -32,6 +32,7 @@ from theme import (
     BG, BLUE_DIM, BORDER, FONT, GREEN, INPUT_BG, RED, SURFACE,
     TEXT_PRIMARY, TEXT_SECONDARY,
 )
+# Note: BLUE_DIM is reserved for the _TaskRow checkbox accent in Task 6.2-3.
 from ui.widgets import label, option_menu, primary_button, tonal_button
 from utils import save_config
 
@@ -57,7 +58,7 @@ _COST_PER_1M_INPUT_TOKENS_USD = 3.0
 
 
 class ExtractTasksDialog(ctk.CTkToplevel):
-    """Phase-6.1 dialog. Master-detail editor lands in Phase 6.2."""
+    """Phase-6.2 master-detail editor scaffold (interactivity in Tasks 3–4)."""
 
     def __init__(
         self,
@@ -104,7 +105,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)   # textbox row stretches
+        self.grid_rowconfigure(2, weight=1)   # editor row stretches
 
         # --- Header row: model + team + refresh + extract ---
         header = ctk.CTkFrame(self, fg_color="transparent")
@@ -161,8 +162,8 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # --- Editor: master-detail layout ---
         editor = ctk.CTkFrame(self, fg_color="transparent")
         editor.grid(row=2, column=0, padx=16, pady=(2, 4), sticky="nsew")
-        editor.grid_columnconfigure(0, weight=1, minsize=300)
-        editor.grid_columnconfigure(1, weight=2, minsize=400)
+        editor.grid_columnconfigure(0, weight=1, minsize=180)
+        editor.grid_columnconfigure(1, weight=2, minsize=360)
         editor.grid_rowconfigure(0, weight=1)
 
         # Left: scrollable list of task rows + bottom action bar.
@@ -474,8 +475,10 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
     def _set_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
-        self._btn_extract.configure(state=state)
-        self._btn_refresh.configure(state=state)
+        for btn in (self._btn_extract, self._btn_refresh,
+                    self._btn_add, self._btn_select_all,
+                    self._btn_select_none, self._btn_delete):
+            btn.configure(state=state)
 
     def _remember_recent_model(self, slug: str) -> None:
         """If `slug` is custom (not in curated list), prepend to FIFO-5 list."""
@@ -515,7 +518,6 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
         # StringVar/BooleanVar instances (re-bound on selection change).
         self._var_title       = ctk.StringVar()
-        self._var_description = ctk.StringVar()
         self._var_priority    = ctk.StringVar(value="none")
         self._var_assignee    = ctk.StringVar(value="(нет)")
         self._var_due_date    = ctk.StringVar()
