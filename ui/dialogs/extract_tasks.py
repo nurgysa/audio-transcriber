@@ -59,9 +59,25 @@ _RECENT_MODELS_LIMIT = 5
 # Glide (boards). Keeps the header label honest about what's underneath.
 _CONTAINER_LABEL_BY_BACKEND = {"linear": "Команда", "glide": "Доска"}
 
-# Sonnet-4.5 input price per 1M tokens. Used for the cost-estimate hint.
-# Imprecise (we don't know the actual model's price) but useful as a sanity-check.
+# Sonnet-4.5 input price per 1M tokens. Used for the upfront cost-estimate
+# hint (before user runs Извлечь — we don't know which model yet, so we
+# approximate with the default).
 _COST_PER_1M_INPUT_TOKENS_USD = 3.0
+
+# Per-model pricing for the post-call **real** cost display in
+# _on_extract_success — uses response.usage tokens × these rates.
+# Tuple is (input_$_per_1M, output_$_per_1M). Updated 2026-04 from
+# OpenRouter pricing pages. May drift; if the response itself includes
+# `usage.cost`, that authoritative value is used and this table is
+# bypassed (see _compute_real_cost). New models should be added here
+# alongside _CURATED_MODELS.
+_MODEL_PRICING_USD_PER_M = {
+    "anthropic/claude-sonnet-4.5":  (3.00, 15.00),
+    "anthropic/claude-haiku-4.5":   (1.00,  5.00),
+    "openai/gpt-4o":                (2.50, 10.00),
+    "google/gemini-2.5-pro":        (1.25, 10.00),
+    "deepseek/deepseek-v3":         (0.27,  1.10),
+}
 
 _PRIORITY_GLYPHS = {
     "none":   "⚪",
@@ -764,16 +780,19 @@ class ExtractTasksDialog(ctk.CTkToplevel):
     def _on_extract_success(self, result: dict, meta: dict) -> None:
         n = len(result["tasks"])
         corr = result["corrections"]
+        # Phase 6.5 B — real LLM cost display from response.usage.
+        # Replaces the upfront «Стоимость ≈ $X.XX» heuristic with the
+        # authoritative number for THIS extract.
+        usage = result.get("usage") or {}
+        used_model = result.get("model") or ""
+        cost_str = self._format_real_cost(usage, used_model)
+
+        parts = [f"✓ Извлечено {n} задач"]
         if corr:
-            self._status_label.configure(
-                text=f"✓ Извлечено {n} задач ({corr} полей скорректированы)",
-                text_color=GREEN,
-            )
-        else:
-            self._status_label.configure(
-                text=f"✓ Извлечено {n} задач",
-                text_color=GREEN,
-            )
+            parts.append(f"({corr} полей скорректированы)")
+        if cost_str:
+            parts.append(f"·  {cost_str}")
+        self._status_label.configure(text="  ".join(parts), text_color=GREEN)
 
         # Promote in-memory tasks to dialog state for the editor.
         self._tasks = list(result["tasks"])
@@ -792,6 +811,47 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._saved_label.configure(
             text=f"Сохранено: {rel}", text_color=TEXT_SECONDARY,
         )
+
+    def _format_real_cost(self, usage: dict, model: str) -> str:
+        """Build a "X tokens · $0.0123" string from response.usage.
+
+        Returns "" if usage is empty (defensive — all callers should
+        already guard, but defensive helps composability).
+
+        Cost source priority:
+          1. usage["cost"] if OpenRouter included it (authoritative).
+          2. computed: prompt × in_rate + completion × out_rate, where
+             rates come from _MODEL_PRICING_USD_PER_M for the actual
+             model that served the request.
+          3. token count only — for unknown models we still show
+             throughput so the user knows extraction did something.
+
+        Format examples:
+            "1,234↑ + 567↓ т.  ·  $0.0234"      (full, known model)
+            "1,234↑ + 567↓ т."                    (unknown model)
+        """
+        if not usage:
+            return ""
+        prompt = int(usage.get("prompt_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or 0)
+        if prompt == 0 and completion == 0:
+            return ""
+
+        cost: Optional[float] = None
+        if "cost" in usage and isinstance(usage.get("cost"), (int, float)):
+            cost = float(usage["cost"])
+        else:
+            rates = _MODEL_PRICING_USD_PER_M.get(model)
+            if rates is not None:
+                in_rate, out_rate = rates
+                cost = (prompt * in_rate + completion * out_rate) / 1_000_000.0
+
+        # Compose. Russian commas via .format spec; locale-agnostic comma
+        # (1,234) is intentional — easier to read than 1234.
+        toks_part = f"{prompt:,}↑ + {completion:,}↓ т."
+        if cost is None:
+            return toks_part
+        return f"{toks_part}  ·  ${cost:.4f}"
 
     def _on_extract_error(self, msg: str, raw_response: Optional[str]) -> None:
         from tasks.errors import humanize
