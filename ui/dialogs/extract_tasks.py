@@ -769,6 +769,12 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                     self._btn_add, self._btn_select_all,
                     self._btn_select_none, self._btn_delete):
             btn.configure(state=state)
+        # Autofill button (Phase 6.5) — disabled while busy, but doesn't
+        # follow _set_editor_buttons_state because it's valid even when
+        # no task is selected (auto-creates a fresh one).
+        autofill_btn = getattr(self, "_btn_autofill", None)
+        if autofill_btn is not None:
+            autofill_btn.configure(state=state)
         # Send/Retry are only force-disabled while busy; their re-enable
         # state comes from _refresh_send_button_label (pending/failed counts).
         if busy:
@@ -823,7 +829,30 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._var_assignee    = ctk.StringVar(value="(нет)")
         self._var_due_date    = ctk.StringVar()
 
-        row = 0
+        # ── Autofill-from-text section (Phase 6.5, WhisperFlow-friendly) ──
+        # User dictates a free-form description (via WhisperFlow or by
+        # typing) into this textbox; clicking the button below runs the
+        # text through the LLM (extract_one_task) and overwrites the
+        # form fields. Sits at the TOP of the form so it's the first
+        # thing the user sees when they click + Добавить on a fresh task.
+        label(f, "Подсказка для AI (можно надиктовать через WhisperFlow)").grid(
+            row=0, column=0, padx=12, pady=(12, 2), sticky="w",
+        )
+        self._textbox_autofill_hint = ctk.CTkTextbox(
+            f, wrap="word", height=64,
+            font=ctk.CTkFont(family=FONT, size=12),
+            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
+        )
+        self._textbox_autofill_hint.grid(
+            row=1, column=0, padx=12, pady=(0, 6), sticky="ew",
+        )
+        self._btn_autofill = tonal_button(
+            f, text="Заполнить из текста",
+            command=self._on_autofill_clicked, width=200,
+        )
+        self._btn_autofill.grid(row=2, column=0, padx=12, pady=(0, 14), sticky="w")
+
+        row = 3
         label(f, "Заголовок").grid(row=row, column=0, padx=12, pady=(12, 2), sticky="w")
         row += 1
         self._entry_title = ctk.CTkEntry(
@@ -1146,6 +1175,138 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             return
         self._textbox_description.edit_modified(False)
         self._persist_current_task()
+
+    # ── Autofill from free-form text (Phase 6.5) ────────────────────
+
+    def _on_autofill_clicked(self) -> None:
+        """Read free text from the autofill textbox, run extract_one_task,
+        populate the form fields on success.
+
+        If no task is currently selected, auto-creates an empty one first
+        (mirrors the natural «+ Добавить → надиктовать → заполнить» flow).
+        Push undo snapshot so user can Ctrl+Z to revert if the LLM
+        misinterprets the input."""
+        free_text = self._textbox_autofill_hint.get("1.0", "end").strip()
+        if not free_text:
+            self._status_label.configure(
+                text="Введите текст в поле подсказки",
+                text_color=RED,
+            )
+            return
+
+        api_key = (self._config.get("openrouter_api_key") or "").strip()
+        if not api_key:
+            messagebox.showwarning(
+                "Нет ключа OpenRouter",
+                "Добавьте OpenRouter API ключ в Settings и повторите.",
+            )
+            return
+
+        # Auto-create a task if none selected (lets user click + Добавить
+        # OR just type into the hint and click — both flows work).
+        if self._selected_index is None or not self._tasks:
+            self._on_add_task()
+
+        self._push_undo_snapshot()
+        self._set_busy(True)
+        self._status_label.configure(
+            text="Заполнение из текста...", text_color=TEXT_SECONDARY,
+        )
+        model = self._model_var.get().strip() or "anthropic/claude-sonnet-4.5"
+        threading.Thread(
+            target=self._run_autofill_worker,
+            args=(free_text, model, api_key),
+            daemon=True,
+        ).start()
+
+    def _run_autofill_worker(
+        self, free_text: str, model: str, api_key: str,
+    ) -> None:
+        """Worker thread: drive extract_one_task. Marshalls success or
+        error back to the main thread via self.after."""
+        from tasks.extractor import extract_one_task, ExtractionError
+        from tasks.openrouter_client import OpenRouterClient, OpenRouterError
+
+        openrouter = None
+        result: Optional[object] = None
+        error_msg: Optional[str] = None
+        try:
+            openrouter = OpenRouterClient(api_key)
+            self._active_clients.append(openrouter)
+            members = list(getattr(self, "_cached_members", []) or [])
+            labels  = list(getattr(self, "_cached_labels",  []) or [])
+            result = extract_one_task(
+                free_text=free_text,
+                members=members, labels=labels,
+                lang=self._transcript_lang,
+                model=model,
+                openrouter_client=openrouter,
+            )
+        except (OpenRouterError, ExtractionError) as e:
+            error_msg = str(e)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception("autofill worker crashed")
+            error_msg = f"{type(e).__name__}: {e}"
+        finally:
+            if openrouter is not None:
+                try:
+                    openrouter.close()
+                except Exception:
+                    pass
+                if openrouter in self._active_clients:
+                    self._active_clients.remove(openrouter)
+
+        if self._cancel_event.is_set():
+            return
+        if error_msg is not None:
+            self.after(0, self._on_autofill_error, error_msg)
+        else:
+            self.after(0, self._on_autofill_success, result)
+
+    def _on_autofill_success(self, task) -> None:
+        """Main-thread callback: write LLM-derived fields into the
+        currently selected task and refresh both the form and the list row."""
+        self._set_busy(False)
+        if task is None:
+            self._status_label.configure(
+                text="✗ LLM не смог распознать задачу из текста — попробуйте перефразировать",
+                text_color=RED,
+            )
+            return
+        if self._selected_index is None or self._selected_index >= len(self._tasks):
+            return
+
+        current = self._tasks[self._selected_index]
+        # Overwrite LLM-extracted fields. local_id / status / send_* /
+        # selected stay as they were on the in-memory task.
+        current.title         = task.title
+        current.description   = task.description
+        current.priority      = task.priority
+        current.assignee_id   = task.assignee_id
+        current.assignee_name = task.assignee_name
+        current.label_ids     = list(task.label_ids)
+        current.label_names   = list(task.label_names)
+        current.due_date      = task.due_date
+
+        # Re-bind form vars to the (now mutated) task — refresh display.
+        self._bind_form_to(current)
+        if self._selected_index < len(getattr(self, "_task_rows", [])):
+            try:
+                self._task_rows[self._selected_index].refresh_from_task()
+            except Exception:
+                pass
+        self._save_tasks_to_disk()
+
+        # Clear the hint textbox so the next dictation starts clean.
+        self._textbox_autofill_hint.delete("1.0", "end")
+        self._status_label.configure(
+            text="✓ Поля заполнены", text_color=GREEN,
+        )
+
+    def _on_autofill_error(self, msg: str) -> None:
+        self._set_busy(False)
+        self._status_label.configure(text=f"✗ {msg}", text_color=RED)
 
     def _teams_context_members(self) -> list:
         """Return the members list from the most recent team_context fetch.

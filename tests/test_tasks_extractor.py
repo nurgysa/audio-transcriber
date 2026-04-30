@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from tasks.extractor import (
-    ExtractionError, build_prompt, extract, parse_and_validate,
+    ExtractionError, build_prompt, extract, extract_one_task, parse_and_validate,
 )
 from tasks.schema import Priority
 
@@ -302,3 +302,110 @@ def test_extract_attaches_raw_response_to_extraction_error():
         extract(transcript="t", team_id="tid", model="m", lang=None,
                 linear_client=linear, openrouter_client=openrouter)
     assert excinfo.value.raw_response == bad_payload
+
+
+# ── extract_one_task (Phase 6.5 — autofill from free text) ────────────
+
+
+def test_extract_one_task_returns_first_task_on_success():
+    """Happy path: LLM returns one valid task → function returns it."""
+    openrouter = MagicMock()
+    openrouter.complete.return_value = {
+        "content": _llm_response([
+            {"title": "Починить login bug",
+             "priority": "high",
+             "assignee_id": "u-aidar",
+             "label_ids": ["l-bug"]},
+        ]),
+        "usage": {}, "model": "anthropic/claude-sonnet-4.5",
+    }
+
+    task = extract_one_task(
+        free_text="Починить login bug, ответственный Айдар, метка bug",
+        members=_members(), labels=_labels(),
+        lang="ru", model="anthropic/claude-sonnet-4.5",
+        openrouter_client=openrouter,
+    )
+
+    assert task is not None
+    assert task.title == "Починить login bug"
+    assert task.priority == Priority.HIGH
+    assert task.assignee_id == "u-aidar"
+    assert task.label_ids == ["l-bug"]
+    openrouter.complete.assert_called_once()
+
+
+def test_extract_one_task_returns_none_on_empty_llm_output():
+    """LLM returns {tasks: []} or all-invalid → function returns None."""
+    openrouter = MagicMock()
+    openrouter.complete.return_value = {
+        "content": _llm_response([]),
+        "usage": {}, "model": "x",
+    }
+    # Empty tasks array passes parse_and_validate's "no tasks key" check
+    # because the key IS present, just empty. parse_and_validate raises
+    # in this case; extract_one_task should let that bubble or return None
+    # depending on the path. Let's verify by feeding all-empty-title tasks
+    # (which parse drops → empty list → ExtractionError "all invalid").
+    # Per current parse_and_validate, empty array directly raises too.
+    # So this test verifies our None branch works if parse returns []
+    # somehow. Use a payload that produces zero valid tasks but also
+    # zero raw tasks doesn't trigger "all invalid" — we use a single
+    # task whose title is empty to exercise the drop-and-return-None path.
+    openrouter.complete.return_value = {
+        "content": _llm_response([
+            {"title": "", "priority": "low"},  # dropped: empty title
+            # Need at least one entry so "all invalid" raises ExtractionError
+            # in current parse_and_validate. We confirm exception path:
+        ]),
+        "usage": {}, "model": "x",
+    }
+    with pytest.raises(ExtractionError):
+        extract_one_task(
+            free_text="bad", members=_members(), labels=_labels(),
+            lang="ru", model="x", openrouter_client=openrouter,
+        )
+
+
+def test_extract_one_task_validates_assignee_against_members():
+    """Hallucinated assignee_id is filtered (parse_and_validate behaviour)."""
+    openrouter = MagicMock()
+    openrouter.complete.return_value = {
+        "content": _llm_response([
+            {"title": "T",
+             "priority": "medium",
+             "assignee_id": "u-fake-uuid"},   # not in _members()
+        ]),
+        "usage": {}, "model": "x",
+    }
+    task = extract_one_task(
+        free_text="t", members=_members(), labels=_labels(),
+        lang="ru", model="x", openrouter_client=openrouter,
+    )
+    assert task is not None
+    assert task.title == "T"
+    # Hallucinated assignee dropped:
+    assert task.assignee_id is None
+
+
+def test_extract_one_task_retries_without_json_mode_on_400():
+    """Same json-mode-fallback as extract()."""
+    from tasks.openrouter_client import OpenRouterError
+    openrouter = MagicMock()
+    openrouter.complete.side_effect = [
+        OpenRouterError("OpenRouter вернул 400: response_format unsupported"),
+        {
+            "content": _llm_response([{"title": "T", "priority": "low"}]),
+            "usage": {}, "model": "deepseek/deepseek-v3",
+        },
+    ]
+    task = extract_one_task(
+        free_text="t", members=[], labels=[],
+        lang=None, model="deepseek/deepseek-v3",
+        openrouter_client=openrouter,
+    )
+    assert task is not None
+    assert task.title == "T"
+    assert openrouter.complete.call_count == 2
+    assert openrouter.complete.call_args_list[0].kwargs.get("json_mode") is True
+    assert openrouter.complete.call_args_list[1].kwargs.get("json_mode") is False

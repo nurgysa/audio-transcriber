@@ -310,6 +310,64 @@ def extract(
     }
 
 
+def extract_one_task(
+    *,
+    free_text: str,
+    members: Optional[list] = None,
+    labels: Optional[list] = None,
+    lang: Optional[str],
+    model: str,
+    openrouter_client: _LLMClient,
+) -> Optional[Task]:
+    """Extract ONE task from a short free-form description.
+
+    Mirrors ``extract()`` but for a single task — used by the WhisperFlow
+    auto-fill flow (Phase 6.5). The prompt machinery doesn't care whether
+    the input is a meeting transcript or 1-3 sentences; we just feed the
+    free text in the user-message slot and take the first task from the
+    LLM's output.
+
+    Returns None when the LLM produces no valid tasks (e.g. it couldn't
+    figure out a title from the input). Caller surfaces this as a
+    user-visible error and lets the user re-phrase.
+
+    Raises the same exceptions as ``extract()``: ``OpenRouterError``
+    on network/HTTP, ``ExtractionError`` on unrecoverable LLM output.
+    """
+    members = members or []
+    labels  = labels  or []
+
+    messages = build_prompt(free_text, members, labels, lang)
+
+    try:
+        response = openrouter_client.complete(
+            model=model, messages=messages, json_mode=True,
+        )
+    except OpenRouterError as e:
+        if "вернул 400:" in str(e):
+            logger.info(
+                "model %s rejected json_mode in extract_one_task, retrying without response_format",
+                model,
+            )
+            response = openrouter_client.complete(
+                model=model, messages=messages, json_mode=False,
+            )
+        else:
+            raise
+
+    raw_content = response["content"]
+    try:
+        tasks, _corrections = parse_and_validate(raw_content, members, labels)
+    except ExtractionError as e:
+        logger.warning(
+            "extract_one_task: ExtractionError; raw LLM response:\n%s",
+            raw_content[:2000],
+        )
+        raise ExtractionError(str(e), raw_response=raw_content) from e
+
+    return tasks[0] if tasks else None
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
