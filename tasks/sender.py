@@ -1,27 +1,28 @@
-"""Send-to-Linear orchestrator.
+"""Send-to-backend orchestrator (backend-agnostic since Phase 6.4.1).
 
-Pure logic — no Tk, no I/O outside the injected LinearClient. The dialog
-wraps this in a worker thread and marshals status updates back to the UI
-via ``self.after(0, ...)``.
+Pure logic — no Tk, no I/O outside the injected backend's `create()` call.
+The dialog wraps this in a worker thread and marshals status updates back
+to the UI via ``self.after(0, ...)``.
 
 Public API:
-    send_tasks_iter(tasks, *, team_id, linear_client, on_status_change,
+    send_tasks_iter(tasks, *, container_id, backend, on_status_change,
                     cancel_check, retry_failed=False)
         → generator yielding Task objects after each status transition
 
-The on_status_change callback is invoked with (task, new_status) signature
-on EVERY transition. It also receives kwargs for context — currently
-unused by callers but reserved for richer status reporting.
+The `backend` is a `tasks.backends.TaskBackend` (Protocol). Was named
+`linear_client` in Phase 6.3 — renamed in 6.4.1 when we abstracted over
+multiple backends. The orchestrator doesn't know or care whether the
+backend talks GraphQL, REST, or telegrams.
 
 Filtering rules:
 - Initial send (retry_failed=False): send tasks where selected=True AND
   status=PENDING. Skip already-SENT, already-FAILED, and unselected tasks.
 - Retry send (retry_failed=True): send tasks where status=FAILED. Already-
-  SENT tasks are NEVER touched (avoids duplicate Linear issues).
+  SENT tasks are NEVER touched (avoids duplicate Linear/Glide issues).
 
 Status transitions:
   PENDING → SENDING → SENT  (success)
-  PENDING → SENDING → FAILED  (LinearError)
+  PENDING → SENDING → FAILED  (backend exception)
   FAILED → SENDING → SENT  (retry success)
   FAILED → SENDING → FAILED  (retry failure)
 """
@@ -32,7 +33,8 @@ import re
 from typing import Callable, Iterator
 
 from tasks.linear_client import LinearError
-from tasks.schema import Priority, Task, TaskStatus
+from tasks.glide_client import GlideError
+from tasks.schema import Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -40,19 +42,19 @@ logger = logging.getLogger(__name__)
 def send_tasks_iter(
     tasks: list[Task],
     *,
-    team_id: str,
-    linear_client,
+    container_id: str,
+    backend,
     on_status_change: Callable,
     cancel_check: Callable[[], bool],
     retry_failed: bool = False,
 ) -> Iterator[Task]:
-    """Iterate selected tasks and POST each to Linear.
+    """Iterate selected tasks and POST each via backend.create().
 
     Yields each task after its terminal status (SENT / FAILED) is set.
     Caller iterates the generator to drive the send (the generator does
     the work; the yielded values are mostly for testing).
 
-    `cancel_check()` is called BEFORE each Linear request. If it returns
+    `cancel_check()` is called BEFORE each backend request. If it returns
     True, the iteration stops; tasks not yet sent retain their PENDING/
     FAILED status.
 
@@ -73,8 +75,8 @@ def send_tasks_iter(
         on_status_change(task, TaskStatus.SENDING)
 
         try:
-            issue = _create_one(linear_client, team_id, task)
-        except LinearError as e:
+            issue = backend.create(container_id, task)
+        except (LinearError, GlideError) as e:
             task.status = TaskStatus.FAILED
             task.send_error = _short_error_code(str(e)) or "error"
             logger.warning(
@@ -97,8 +99,10 @@ def send_tasks_iter(
             continue
 
         task.status = TaskStatus.SENT
-        task.linear_issue_id = issue.get("identifier")
-        task.linear_issue_url = issue.get("url")
+        # Field names are Linear-flavoured (Phase 6.0) but hold the
+        # backend-agnostic identifier+url returned by backend.create().
+        task.linear_issue_id = issue.identifier
+        task.linear_issue_url = issue.url
         task.send_error = None
         on_status_change(task, TaskStatus.SENT)
         yield task
@@ -115,35 +119,19 @@ def _should_send(task: Task, *, retry_failed: bool) -> bool:
     return task.status is TaskStatus.PENDING
 
 
-def _create_one(linear_client, team_id: str, task: Task) -> dict:
-    """Build the create_issue kwargs from a Task and call the client."""
-    kwargs = {
-        "team_id": team_id,
-        "title": task.title,
-    }
-    # Description: only pass if non-empty (Linear treats null as 'set null').
-    if task.description:
-        kwargs["description"] = task.description
-    if task.priority is not Priority.NONE:
-        kwargs["priority"] = int(task.priority.value)
-    if task.assignee_id:
-        kwargs["assignee_id"] = task.assignee_id
-    if task.label_ids:
-        kwargs["label_ids"] = list(task.label_ids)
-    if task.due_date:
-        kwargs["due_date"] = task.due_date
-    return linear_client.create_issue(**kwargs)
-
-
 def _short_error_code(msg: str) -> str:
-    """Extract a short tag from a Linear/network error message.
+    """Extract a short tag from a backend error message.
 
     Examples:
         "Linear вернул 401: ..." → "401"
-        "Linear 429 rate-limit"  → "429"
-        "Нет соединения с..."   → "network"
-        "Таймаут Linear..."     → "timeout"
-        anything else            → ""
+        "Glide 401: неверный..."  → "401"
+        "Glide 429 rate-limit"    → "429"
+        "Нет соединения с..."     → "network"
+        "Таймаут Linear..."       → "timeout"
+        anything else              → ""
+
+    Backends localize messages differently; we match on numeric codes
+    first, then language-agnostic keywords.
     """
     msg_lower = msg.lower()
     # HTTP status codes. \b ensures "1400" doesn't match "400" — between two

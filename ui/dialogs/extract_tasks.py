@@ -48,10 +48,16 @@ _CURATED_MODELS = [
     "deepseek/deepseek-v3",
 ]
 
-_TEAMS_CACHE_KEY = "linear_teams_cache"
-_TEAMS_CACHE_TTL = timedelta(hours=24)
+_TEAMS_CACHE_KEY = "linear_teams_cache"      # Phase 6.1 — Linear teams
+_BOARDS_CACHE_KEY = "glide_boards_cache"     # Phase 6.4.1 — Glide boards
+_CONTAINER_CACHE_TTL = timedelta(hours=24)
+_TEAMS_CACHE_TTL = _CONTAINER_CACHE_TTL      # back-compat alias for any callers
 _RECENT_MODELS_KEY = "tasks_recent_models"
 _RECENT_MODELS_LIMIT = 5
+
+# Per-backend dropdown labels — "Команда" for Linear (teams), "Доска" for
+# Glide (boards). Keeps the header label honest about what's underneath.
+_CONTAINER_LABEL_BY_BACKEND = {"linear": "Команда", "glide": "Доска"}
 
 # Sonnet-4.5 input price per 1M tokens. Used for the cost-estimate hint.
 # Imprecise (we don't know the actual model's price) but useful as a sanity-check.
@@ -221,8 +227,14 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # Worker-thread plumbing: cancel_event flips on close;
         # active_client is the in-flight client we close to interrupt sockets.
         self._cancel_event = threading.Event()
-        self._active_clients: list = []   # OpenRouter + Linear clients in flight
-        self._teams: list[dict] = []      # populated by bootstrap
+        self._active_clients: list = []   # OpenRouter + backend clients in flight
+        self._containers: list = []       # list[Container] from backend.bootstrap()
+
+        # Phase 6.4.1: backend selection. Initial value picks the first
+        # enabled backend (per Settings checkboxes). If the loaded
+        # tasks.json has a backend recorded, prefer that to keep the
+        # editor consistent with what's already on disk.
+        self._enabled_backends: list[str] = self._compute_enabled_backends()
 
         # Editor state. _tasks is the canonical in-memory list; right form
         # binds to _tasks[_selected_index]. _meta carries extract context for
@@ -264,7 +276,20 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             self._render_task_list()
             self._set_selection(0)
 
-        self._load_teams_async()
+        self._load_containers_async()
+
+    def _compute_enabled_backends(self) -> list[str]:
+        """Read Settings checkboxes (Phase 6.4) → list of enabled names.
+
+        Order is significant: first enabled is the default selection.
+        Falls back to ["linear"] if both flags are missing/false (back-
+        compat with pre-6.4 configs that have no flags written yet)."""
+        enabled = []
+        if bool(self._config.get("linear_enabled", True)):
+            enabled.append("linear")
+        if bool(self._config.get("glide_enabled", True)):
+            enabled.append("glide")
+        return enabled or ["linear"]
 
     # ── UI construction ──────────────────────────────────────────
 
@@ -272,11 +297,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)   # editor row stretches
 
-        # --- Header row: model + team + refresh + extract ---
+        # --- Header row: model + backend + container + refresh + extract ---
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, padx=16, pady=(14, 6), sticky="ew")
-        header.grid_columnconfigure(1, weight=1)
-        header.grid_columnconfigure(3, weight=1)
+        header.grid_columnconfigure(1, weight=1)   # model
+        header.grid_columnconfigure(5, weight=1)   # container
 
         label(header, "Модель").grid(row=0, column=0, padx=(0, 6), sticky="w")
         default_model = self._config.get(
@@ -291,33 +316,57 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # CTkComboBox lets the user type custom slugs that aren't in the list.
         self._model_combo = ctk.CTkComboBox(
             header, variable=self._model_var, values=all_models,
-            width=280, height=32,
+            width=240, height=32,
             font=ctk.CTkFont(family=FONT, size=12),
             border_color=BORDER, button_color=BORDER,
             fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
         )
         self._model_combo.grid(row=0, column=1, padx=(0, 12), sticky="ew")
 
-        label(header, "Команда").grid(row=0, column=2, padx=(0, 6), sticky="w")
+        # Phase 6.4.1: backend selection. Values come from Settings flags;
+        # changing it triggers re-fetch of containers.
+        label(header, "Backend").grid(row=0, column=2, padx=(0, 6), sticky="w")
+        backend_display = [
+            "Linear" if n == "linear" else "Glide"
+            for n in self._enabled_backends
+        ]
+        self._backend_var = ctk.StringVar(
+            value=backend_display[0] if backend_display else "Linear",
+        )
+        self._backend_menu = ctk.CTkComboBox(
+            header, variable=self._backend_var, values=backend_display or ["Linear"],
+            width=110, height=32, state="readonly",
+            font=ctk.CTkFont(family=FONT, size=12),
+            border_color=BORDER, button_color=BORDER,
+            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
+            command=self._on_backend_changed,
+        )
+        self._backend_menu.grid(row=0, column=3, padx=(0, 12), sticky="w")
+
+        # Container dropdown — label changes per backend (Команда / Доска).
+        self._container_label = label(
+            header, _CONTAINER_LABEL_BY_BACKEND.get(self._current_backend_name(), "Команда"),
+        )
+        self._container_label.grid(row=0, column=4, padx=(0, 6), sticky="w")
         self._team_var = ctk.StringVar(value="(загрузка...)")
         self._team_menu = ctk.CTkComboBox(
             header, variable=self._team_var, values=["(загрузка...)"],
-            width=200, height=32, state="readonly",
+            width=180, height=32, state="readonly",
             font=ctk.CTkFont(family=FONT, size=12),
             border_color=BORDER, button_color=BORDER,
             fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
         )
-        self._team_menu.grid(row=0, column=3, padx=(0, 4), sticky="ew")
+        self._team_menu.grid(row=0, column=5, padx=(0, 4), sticky="ew")
 
         self._btn_refresh = tonal_button(
-            header, text="↻", command=self._refresh_teams, width=36,
+            header, text="↻", command=self._refresh_containers, width=36,
         )
-        self._btn_refresh.grid(row=0, column=4, padx=(0, 8))
+        self._btn_refresh.grid(row=0, column=6, padx=(0, 8))
 
         self._btn_extract = primary_button(
             header, text="Извлечь", command=self._on_extract, width=120,
         )
-        self._btn_extract.grid(row=0, column=5)
+        self._btn_extract.grid(row=0, column=7)
 
         # --- Status / cost hint row ---
         self._status_label = label(self, "", anchor="w")
@@ -409,90 +458,140 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             text_color=TEXT_SECONDARY,
         )
 
-    # ── Team bootstrap (cached 24h) ──────────────────────────────
+    # ── Backend / container bootstrap (cached 24h per backend) ──────
 
-    def _load_teams_async(self) -> None:
-        """Use cache if fresh; else fetch from Linear in a worker."""
-        cache = self._config.get(_TEAMS_CACHE_KEY) or {}
+    def _current_backend_name(self) -> str:
+        """Map dropdown display value → internal backend name.
+
+        Returns "linear" or "glide". Defaults to first enabled if the
+        UI hasn't been built yet (called from _build_ui pre-init)."""
+        var = getattr(self, "_backend_var", None)
+        display = var.get() if var is not None else None
+        if display == "Glide":
+            return "glide"
+        if display == "Linear":
+            return "linear"
+        # Pre-build / unknown — first enabled.
+        return self._enabled_backends[0] if self._enabled_backends else "linear"
+
+    def _backend_cache_key(self) -> str:
+        return _BOARDS_CACHE_KEY if self._current_backend_name() == "glide" else _TEAMS_CACHE_KEY
+
+    def _on_backend_changed(self, _value: str = "") -> None:
+        """User picked a different backend in the dropdown.
+
+        Swap the container-label (Команда / Доска) and re-fetch the
+        container list for the new backend. Clear the editor — task list
+        from a Linear extract isn't meaningful in a Glide context."""
+        self._container_label.configure(
+            text=_CONTAINER_LABEL_BY_BACKEND.get(self._current_backend_name(), "Команда"),
+        )
+        self._team_var.set("(загрузка...)")
+        self._team_menu.configure(values=["(загрузка...)"])
+        self._load_containers_async()
+
+    def _load_containers_async(self) -> None:
+        """Use cache if fresh; else fetch from the selected backend in a worker."""
+        cache_key = self._backend_cache_key()
+        cache = self._config.get(cache_key) or {}
         fetched_at = cache.get("fetched_at")
         if fetched_at:
             try:
                 age = datetime.now() - datetime.fromisoformat(fetched_at)
             except ValueError:
-                age = _TEAMS_CACHE_TTL + timedelta(seconds=1)
-            if age <= _TEAMS_CACHE_TTL and cache.get("data"):
-                self._teams = list(cache["data"])
-                self._populate_team_dropdown()
+                age = _CONTAINER_CACHE_TTL + timedelta(seconds=1)
+            if age <= _CONTAINER_CACHE_TTL and cache.get("data"):
+                # Cache stores plain dicts; rebuild Container objects.
+                from tasks.backends.base import Container
+                self._containers = [
+                    Container(id=d["id"], name=d.get("name", "?"), key=d.get("key"))
+                    for d in cache["data"]
+                ]
+                self._populate_container_dropdown()
                 return
 
-        self._fetch_teams_in_worker()
+        self._fetch_containers_in_worker()
 
-    def _refresh_teams(self) -> None:
+    def _refresh_containers(self) -> None:
         """[↻] forces a fetch regardless of cache age."""
         self._team_var.set("(обновление...)")
         self._team_menu.configure(values=["(обновление...)"])
-        self._fetch_teams_in_worker()
+        self._fetch_containers_in_worker()
 
-    def _fetch_teams_in_worker(self) -> None:
-        api_key = (self._config.get("linear_api_key") or "").strip()
+    def _fetch_containers_in_worker(self) -> None:
+        from tasks.backends import backend_from_name
+
+        backend_name = self._current_backend_name()
+        api_key_field = "linear_api_key" if backend_name == "linear" else "glide_api_key"
+        api_key = (self._config.get(api_key_field) or "").strip()
         if not api_key:
-            self._team_var.set("(нет ключа Linear)")
+            self._team_var.set(f"(нет ключа {backend_name.title()})")
             return
 
         def worker():
+            backend = None
             try:
-                from tasks.linear_client import LinearClient, LinearError
-                client = LinearClient(api_key)
-                self._active_clients.append(client)
+                backend = backend_from_name(backend_name, self._config)
+                self._active_clients.append(backend)
                 try:
-                    result = client.bootstrap()
+                    containers = backend.bootstrap()
                 finally:
-                    self._active_clients.remove(client)
-                    client.close()
+                    self._active_clients.remove(backend)
+                    backend.close()
             except Exception as e:
                 if self._cancel_event.is_set():
-                    return  # dialog already closing; ignore
-                self.after(0, self._on_teams_error, str(e))
+                    return
+                self.after(0, self._on_containers_error, str(e))
                 return
 
             if self._cancel_event.is_set():
                 return
-            teams = result.get("teams", [])
-            self._config[_TEAMS_CACHE_KEY] = {
-                "data": teams,
+            # Cache as plain dicts for JSON-safety.
+            self._config[self._backend_cache_key()] = {
+                "data": [
+                    {"id": c.id, "name": c.name, "key": c.key}
+                    for c in containers
+                ],
                 "fetched_at": datetime.now().isoformat(timespec="seconds"),
             }
             save_config(self._config)
-            self.after(0, self._on_teams_loaded, teams)
+            self.after(0, self._on_containers_loaded, containers)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_teams_loaded(self, teams: list[dict]) -> None:
-        self._teams = teams
-        self._populate_team_dropdown()
+    def _on_containers_loaded(self, containers: list) -> None:
+        self._containers = containers
+        self._populate_container_dropdown()
 
-    def _on_teams_error(self, msg: str) -> None:
+    def _on_containers_error(self, msg: str) -> None:
         self._team_var.set("(ошибка)")
         self._team_menu.configure(values=["(ошибка)"])
         self._status_label.configure(text=f"✗ {msg}", text_color=RED)
 
-    def _populate_team_dropdown(self) -> None:
-        if not self._teams:
-            self._team_var.set("(нет команд)")
-            self._team_menu.configure(values=["(нет команд)"])
+    def _populate_container_dropdown(self) -> None:
+        if not self._containers:
+            empty_label = "(нет досок)" if self._current_backend_name() == "glide" else "(нет команд)"
+            self._team_var.set(empty_label)
+            self._team_menu.configure(values=[empty_label])
             return
-        labels = [f"{t['name']} ({t['key']})" for t in self._teams]
+        # Backend-specific label format. Linear: "Engineering (ENG)"; Glide: "Inbox".
+        labels = [
+            f"{c.name} ({c.key})" if c.key else c.name
+            for c in self._containers
+        ]
         self._team_menu.configure(values=labels)
         self._team_var.set(labels[0])
 
     # ── Извлечение ───────────────────────────────────────────────
 
     def _on_extract(self) -> None:
-        team = self._selected_team()
-        if not team:
+        container = self._selected_container()
+        if not container:
+            backend_name = self._current_backend_name()
+            label_word = "доску" if backend_name == "glide" else "команду"
             messagebox.showwarning(
-                "Нет команды",
-                "Выберите команду или нажмите [↻] для загрузки списка.",
+                "Нет контейнера",
+                f"Выберите {label_word} или нажмите [↻] для загрузки списка.",
             )
             return
 
@@ -502,9 +601,17 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             return
 
         self._set_busy(True)
-        self._status_label.configure(
-            text="Запрос к Linear (team_context)...", text_color=TEXT_SECONDARY,
-        )
+        backend_name = self._current_backend_name()
+        # Status text mentions which backend we're talking to so the user
+        # knows whether a slow first-call is going to Linear or Glide.
+        if backend_name == "linear":
+            self._status_label.configure(
+                text="Запрос к Linear (team_context)...", text_color=TEXT_SECONDARY,
+            )
+        else:
+            self._status_label.configure(
+                text="Запрос к Glide...", text_color=TEXT_SECONDARY,
+            )
         # Clear the editor; will be re-populated by _on_extract_success.
         self._tasks = []
         self._selected_index = None
@@ -514,31 +621,42 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
         threading.Thread(
             target=self._run_extraction,
-            args=(team, model),
+            args=(container, model, backend_name),
             daemon=True,
         ).start()
 
-    def _selected_team(self) -> Optional[dict]:
+    def _selected_container(self):
+        """Return the Container the user selected in the dropdown, or None."""
         label_value = self._team_var.get()
-        for t in self._teams:
-            if f"{t['name']} ({t['key']})" == label_value:
-                return t
+        for c in self._containers:
+            display = f"{c.name} ({c.key})" if c.key else c.name
+            if display == label_value:
+                return c
         return None
 
-    def _run_extraction(self, team: dict, model: str) -> None:
+    def _run_extraction(self, container, model: str, backend_name: str) -> None:
         from tasks.extractor import extract, ExtractionError
-        from tasks.linear_client import LinearClient, LinearError
+        from tasks.backends import backend_from_name
+        from tasks.linear_client import LinearError
+        from tasks.glide_client import GlideError
         from tasks.openrouter_client import OpenRouterClient, OpenRouterError
         from tasks.persistence import save_tasks_raw
 
-        linear = openrouter = None
+        backend = openrouter = None
         try:
-            linear     = LinearClient(self._config["linear_api_key"])
+            backend    = backend_from_name(backend_name, self._config)
             openrouter = OpenRouterClient(self._config["openrouter_api_key"])
-            self._active_clients.extend([linear, openrouter])
+            self._active_clients.extend([backend, openrouter])
 
             if self._cancel_event.is_set():
                 return
+
+            # Phase 6.4.1: Glide backend returns empty members/labels (no
+            # LLM grounding). Linear continues to fetch members + labels
+            # for prompt context.
+            ctx = backend.context(container.id)
+            members = ctx.get("members") or []
+            labels  = ctx.get("labels")  or []
 
             if not self._cancel_event.is_set():
                 self.after(0, self._status_label.configure, {
@@ -548,21 +666,26 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
             result = extract(
                 transcript=self._transcript,
-                team_id=team["id"],
                 model=model,
                 lang=self._transcript_lang,
-                linear_client=linear,
                 openrouter_client=openrouter,
+                members=members,
+                labels=labels,
             )
 
             if self._cancel_event.is_set():
                 return
 
+            # Phase 6.4.1: meta carries `backend` discriminator so re-open
+            # of an existing tasks.json knows which backend originally fed
+            # the editor. Old files without `backend` fall back to "linear"
+            # in callers that need to dispatch.
             meta = {
                 "extracted_at": datetime.now().isoformat(timespec="seconds"),
                 "model": result["model"],
-                "team_id": team["id"],
-                "team_name": team["name"],
+                "backend": backend_name,
+                "team_id": container.id,        # legacy field name; holds container id
+                "team_name": container.name,
                 "transcript_lang": self._transcript_lang or "auto",
             }
             save_tasks_raw(self._history_folder, result["tasks"], meta)
@@ -573,13 +696,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 self.after(0, self._on_extract_success, result, meta)
 
         except ExtractionError as e:
-            # ExtractionError carries `raw_response` when extract() got a
-            # successful network round-trip but the payload was unusable.
             if not self._cancel_event.is_set():
                 self.after(
                     0, self._on_extract_error, str(e), e.raw_response,
                 )
-        except (OpenRouterError, LinearError) as e:
+        except (OpenRouterError, LinearError, GlideError) as e:
             if not self._cancel_event.is_set():
                 self.after(0, self._on_extract_error, str(e), None)
         except Exception as e:
@@ -588,7 +709,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             if not self._cancel_event.is_set():
                 self.after(0, self._on_extract_error, f"{type(e).__name__}: {e}", None)
         finally:
-            for c in (linear, openrouter):
+            for c in (backend, openrouter):
                 if c is not None:
                     try:
                         c.close()
@@ -596,8 +717,6 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                         pass
                     if c in self._active_clients:
                         self._active_clients.remove(c)
-            # Guard the final UI update — if the user closed the dialog mid-run
-            # the toplevel is destroyed and self.after would raise TclError.
             if not self._cancel_event.is_set():
                 self.after(0, self._set_busy, False)
 
@@ -1086,20 +1205,24 @@ class ExtractTasksDialog(ctk.CTkToplevel):
     def _start_send(self, *, retry_failed: bool) -> None:
         """Spin up the send worker. Saves any pending form edits first so
         the in-memory tasks list matches what's on disk before sending."""
-        team_id = self._meta.get("team_id") if self._meta else None
-        if not team_id:
+        container_id = self._meta.get("team_id") if self._meta else None
+        if not container_id:
             messagebox.showwarning(
-                "Нет команды",
-                "Не могу отправить — потерян контекст команды. "
+                "Нет контейнера",
+                "Не могу отправить — потерян контекст команды/доски. "
                 "Перезапустите извлечение.",
             )
             return
 
-        api_key = (self._config.get("linear_api_key") or "").strip()
+        # Phase 6.4.1: backend comes from meta (set at extract time). For
+        # legacy tasks.json (pre-6.4) no `backend` key → assume Linear.
+        backend_name = (self._meta.get("backend") if self._meta else None) or "linear"
+        api_key_field = "linear_api_key" if backend_name == "linear" else "glide_api_key"
+        api_key = (self._config.get(api_key_field) or "").strip()
         if not api_key:
             messagebox.showwarning(
-                "Нет ключа Linear",
-                "Добавьте Linear API ключ в Settings и повторите.",
+                f"Нет ключа {backend_name.title()}",
+                f"Добавьте {backend_name.title()} API ключ в Settings и повторите.",
             )
             return
 
@@ -1112,50 +1235,49 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
         self._set_busy(True)
         self._status_label.configure(
-            text="Отправка в Linear...", text_color=TEXT_SECONDARY,
+            text=f"Отправка в {backend_name.title()}...", text_color=TEXT_SECONDARY,
         )
         threading.Thread(
             target=self._run_send_worker,
-            args=(team_id, api_key, retry_failed),
+            args=(container_id, backend_name, retry_failed),
             daemon=True,
         ).start()
 
     def _run_send_worker(
-        self, team_id: str, api_key: str, retry_failed: bool,
+        self, container_id: str, backend_name: str, retry_failed: bool,
     ) -> None:
-        """Worker thread: drive ``send_tasks_iter`` against a fresh LinearClient.
+        """Worker thread: drive ``send_tasks_iter`` against the selected backend.
 
         Status updates flow through ``_on_send_status_change`` (worker thread:
         atomic save_tasks + ``self.after`` for UI). Final completion is
-        marshalled to ``_on_send_finished`` on the main thread.
-        """
-        from tasks.linear_client import LinearClient
+        marshalled to ``_on_send_finished`` on the main thread."""
+        from tasks.backends import backend_from_name
         from tasks.sender import send_tasks_iter
 
-        linear = LinearClient(api_key)
-        self._active_clients.append(linear)
+        backend = backend_from_name(backend_name, self._config)
+        self._active_clients.append(backend)
         error_msg: Optional[str] = None
         try:
             for _ in send_tasks_iter(
                 self._tasks,
-                team_id=team_id,
-                linear_client=linear,
+                container_id=container_id,
+                backend=backend,
                 on_status_change=self._on_send_status_change,
                 cancel_check=self._cancel_event.is_set,
                 retry_failed=retry_failed,
             ):
-                pass  # generator drives the work; yielded values are for tests
+                pass
         except Exception as e:
             import logging
             logging.getLogger(__name__).exception("send worker crashed")
             error_msg = f"{type(e).__name__}: {e}"
         finally:
             try:
-                linear.close()
+                backend.close()
             except Exception:
                 pass
-            if linear in self._active_clients:
-                self._active_clients.remove(linear)
+            if backend in self._active_clients:
+                self._active_clients.remove(backend)
 
         if not self._cancel_event.is_set():
             self.after(0, self._on_send_finished, error_msg)

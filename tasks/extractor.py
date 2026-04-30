@@ -237,11 +237,19 @@ def parse_and_validate(
 def extract(
     *,
     transcript: str,
-    team_id: str,
     model: str,
     lang: Optional[str],
-    linear_client: _LinearClient,
     openrouter_client: _LLMClient,
+    # Phase 6.4.1: extractor no longer fetches team context itself.
+    # Caller passes pre-fetched members/labels (Linear path) or empty
+    # lists (Glide path — no LLM grounding). The legacy team_id +
+    # linear_client params remain for backward compat with Phase 6.0–6.3
+    # callers (and the 21 existing tests); when both paths are provided,
+    # the explicit members/labels win.
+    members: Optional[list] = None,
+    labels: Optional[list] = None,
+    team_id: Optional[str] = None,
+    linear_client: Optional[_LinearClient] = None,
 ) -> dict:
     """Run the full extraction. Returns dict with tasks, corrections, usage,
     model echo, raw_response (for debugging / 'Show raw response' UI).
@@ -250,9 +258,13 @@ def extract(
         OpenRouterError, LinearError — for network/HTTP/auth issues
         ExtractionError              — for unrecoverable LLM-output issues
     """
-    ctx = linear_client.team_context(team_id)
-    members = ctx.get("members") or []
-    labels  = ctx.get("labels")  or []
+    if members is None and labels is None and linear_client is not None and team_id:
+        # Backward-compat path: fetch context ourselves.
+        ctx = linear_client.team_context(team_id)
+        members = ctx.get("members") or []
+        labels  = ctx.get("labels")  or []
+    members = members or []
+    labels  = labels  or []
 
     messages = build_prompt(transcript, members, labels, lang)
 
