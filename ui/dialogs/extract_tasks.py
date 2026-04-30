@@ -942,8 +942,48 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
     # ── Editor handlers ──────────────────────────────────────────
 
+    def _ensure_meta(self) -> bool:
+        """Populate self._meta from current backend+container selection
+        if it's empty (i.e., user is doing manual-add without a prior
+        extract). Returns True if meta is ready, False if user needs to
+        pick a container first.
+
+        Phase 6.5: closes a gap in 6.4.1 where manual-add path silently
+        relied on an earlier extract having populated _meta. Autofill +
+        Send without an extract used to fail with «потерян контекст команды/доски».
+        """
+        if self._meta:
+            return True
+        container = self._selected_container()
+        if not container:
+            backend_name = self._current_backend_name()
+            label_word = "доску" if backend_name == "glide" else "команду"
+            messagebox.showwarning(
+                "Нет контейнера",
+                f"Выберите {label_word} в шапке диалога перед добавлением задач.",
+            )
+            return False
+        backend_name = self._current_backend_name()
+        self._meta = {
+            "extracted_at": datetime.now().isoformat(timespec="seconds"),
+            "model": self._model_var.get().strip(),
+            "backend": backend_name,
+            "team_id": container.id,           # legacy field name; container id
+            "team_name": container.name,
+            "transcript_lang": self._transcript_lang or "auto",
+        }
+        # Manual-add path doesn't fetch members/labels from the backend
+        # (would need an extra round-trip just for assignee grounding).
+        # Autofill from text still works without grounding — LLM fills
+        # title/description/priority and skips assignee/labels.
+        self._cached_members = []
+        self._cached_labels = []
+        return True
+
     def _on_add_task(self) -> None:
         from tasks.schema import Task
+        if not self._ensure_meta():
+            return
         self._push_undo_snapshot()
         new_task = Task(title="")
         self._tasks.append(new_task)
@@ -1200,6 +1240,14 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 "Нет ключа OpenRouter",
                 "Добавьте OpenRouter API ключ в Settings и повторите.",
             )
+            return
+
+        # Phase 6.5 fix: ensure _meta is populated BEFORE any mutation.
+        # If user opened the dialog without a prior extract and goes
+        # directly to autofill, _meta is empty → send would fail later
+        # with «потерян контекст команды/доски». _ensure_meta builds
+        # synthetic meta from the header backend+container dropdowns.
+        if not self._ensure_meta():
             return
 
         # Auto-create a task if none selected (lets user click + Добавить
