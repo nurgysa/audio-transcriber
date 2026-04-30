@@ -388,12 +388,24 @@ class SettingsDialog(ctk.CTkToplevel):
         """Linear API key + connection status.
 
         No team picker here — that's per-run in the ExtractTasksDialog
-        (Phase 6.1). Settings only persists the key.
+        (Phase 6.1). Settings only persists the key. Phase 6.4 adds the
+        enabled-checkbox above; when off, Linear is hidden from the
+        backend dropdown in ExtractTasksDialog (effect wired in 6.4.1).
         """
         section = self._section_card(parent, "Linear", row=7)
 
+        ctk.CTkCheckBox(
+            section, text="Использовать Linear",
+            variable=self._parent._linear_enabled_var,
+            command=self._parent._on_linear_enabled_changed,
+            font=ctk.CTkFont(family=FONT, size=13),
+            text_color=TEXT_PRIMARY, fg_color=BLUE, hover_color=BLUE_DIM,
+            border_color=BORDER, corner_radius=4,
+            checkbox_height=20, checkbox_width=20,
+        ).grid(row=0, column=0, columnspan=3, padx=4, pady=(2, 8), sticky="w")
+
         label(section, "API ключ").grid(
-            row=0, column=0, padx=(4, 8), pady=6, sticky="w",
+            row=1, column=0, padx=(4, 8), pady=6, sticky="w",
         )
         ctk.CTkEntry(
             section, textvariable=self._parent._linear_key_var, height=36,
@@ -402,19 +414,19 @@ class SettingsDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(family=FONT, size=12),
             placeholder_text="lin_api_...",
             show="•",
-        ).grid(row=0, column=1, padx=4, pady=6, sticky="ew")
+        ).grid(row=1, column=1, padx=4, pady=6, sticky="ew")
         tonal_button(
             section, text="Вставить",
             command=self._paste_linear_key, width=100,
-        ).grid(row=0, column=2, padx=(4, 4), pady=6)
+        ).grid(row=1, column=2, padx=(4, 4), pady=6)
 
         tonal_button(
             section, text="Проверить ключ",
             command=self._validate_linear, width=140,
-        ).grid(row=1, column=0, padx=4, pady=6, sticky="w")
+        ).grid(row=2, column=0, padx=4, pady=6, sticky="w")
         self._linear_status = label(section, "", anchor="w")
         self._linear_status.grid(
-            row=1, column=1, columnspan=2, padx=(8, 4), pady=6, sticky="ew",
+            row=2, column=1, columnspan=2, padx=(8, 4), pady=6, sticky="ew",
         )
 
     def _paste_linear_key(self) -> None:
@@ -480,13 +492,23 @@ class SettingsDialog(ctk.CTkToplevel):
         """Glide API key + connection status (Phase 6.4).
 
         Glide is the parallel backend to Linear. Same pattern as the
-        Linear section above: paste, validate (saves on success), shows
-        ✓/✗ status next to the button.
+        Linear section above: enabled-checkbox at top, paste, validate
+        (saves on success), shows ✓/✗ status next to the button.
         """
         section = self._section_card(parent, "Glide", row=8)
 
+        ctk.CTkCheckBox(
+            section, text="Использовать Glide",
+            variable=self._parent._glide_enabled_var,
+            command=self._parent._on_glide_enabled_changed,
+            font=ctk.CTkFont(family=FONT, size=13),
+            text_color=TEXT_PRIMARY, fg_color=BLUE, hover_color=BLUE_DIM,
+            border_color=BORDER, corner_radius=4,
+            checkbox_height=20, checkbox_width=20,
+        ).grid(row=0, column=0, columnspan=3, padx=4, pady=(2, 8), sticky="w")
+
         label(section, "API ключ").grid(
-            row=0, column=0, padx=(4, 8), pady=6, sticky="w",
+            row=1, column=0, padx=(4, 8), pady=6, sticky="w",
         )
         ctk.CTkEntry(
             section, textvariable=self._parent._glide_key_var, height=36,
@@ -495,19 +517,19 @@ class SettingsDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(family=FONT, size=12),
             placeholder_text="glide_pk_<workspace>_...",
             show="•",
-        ).grid(row=0, column=1, padx=4, pady=6, sticky="ew")
+        ).grid(row=1, column=1, padx=4, pady=6, sticky="ew")
         tonal_button(
             section, text="Вставить",
             command=self._paste_glide_key, width=100,
-        ).grid(row=0, column=2, padx=(4, 4), pady=6)
+        ).grid(row=1, column=2, padx=(4, 4), pady=6)
 
         tonal_button(
             section, text="Проверить ключ",
             command=self._validate_glide, width=140,
-        ).grid(row=1, column=0, padx=4, pady=6, sticky="w")
+        ).grid(row=2, column=0, padx=4, pady=6, sticky="w")
         self._glide_status = label(section, "", anchor="w")
         self._glide_status.grid(
-            row=1, column=1, columnspan=2, padx=(8, 4), pady=6, sticky="ew",
+            row=2, column=1, columnspan=2, padx=(8, 4), pady=6, sticky="ew",
         )
 
     def _paste_glide_key(self) -> None:

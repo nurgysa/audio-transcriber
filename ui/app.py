@@ -286,6 +286,18 @@ class App(ctk.CTk):
             value=self._config.get("glide_api_key", ""),
         )
 
+        # Backend enabled flags (Phase 6.4). Per-backend preference whether
+        # to expose it in the ExtractTasksDialog dropdown (Phase 6.4.1).
+        # Default True for both — preserves prior behaviour for users who
+        # haven't touched Settings since 6.0. Persisted instantly on toggle
+        # (no save-on-Validate dance — these flags are standalone).
+        self._linear_enabled_var = ctk.BooleanVar(
+            value=bool(self._config.get("linear_enabled", True)),
+        )
+        self._glide_enabled_var = ctk.BooleanVar(
+            value=bool(self._config.get("glide_enabled", True)),
+        )
+
         # Appearance mode (light/dark/system). The actual ctk.set_appearance_mode
         # call already happened above with the saved value; this StringVar
         # just drives the Settings dialog dropdown and the change callback.
@@ -663,6 +675,20 @@ class App(ctk.CTk):
         Settings dialog rebuilds itself on next open, and _start_transcription
         reads the var directly when starting a job."""
         self._config["cloud_enabled"] = bool(self._cloud_enabled_var.get())
+        save_config(self._config)
+
+    def _on_linear_enabled_changed(self) -> None:
+        """Persist the Linear-backend enabled flag (Phase 6.4).
+
+        Phase 6.4.1 will read this in ExtractTasksDialog to filter the
+        backend dropdown. For now, the flag is just persisted — no
+        immediate UI effect (the dialog only shows Linear in any case)."""
+        self._config["linear_enabled"] = bool(self._linear_enabled_var.get())
+        save_config(self._config)
+
+    def _on_glide_enabled_changed(self) -> None:
+        """Persist the Glide-backend enabled flag (Phase 6.4)."""
+        self._config["glide_enabled"] = bool(self._glide_enabled_var.get())
         save_config(self._config)
 
     def _on_cloud_provider_changed(self, value: str) -> None:
