@@ -240,7 +240,14 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._try_load_existing_tasks()
 
         self.title("Извлечение задач")
-        self.geometry("640x520")
+        # 1100x720 — comfortable for the master-detail editor (Phase 6.2):
+        # left list ≥260px, right form ≥520px, both with breathing room.
+        # Spec called for ~960×680 but real-world usage with longer Russian
+        # task titles benefits from wider rows. minsize prevents the layout
+        # from collapsing if user resizes too aggressively (form fields
+        # become unreadable below ~720 wide).
+        self.geometry("1100x720")
+        self.minsize(820, 560)
         self.configure(fg_color=BG)
         self.transient(parent)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
