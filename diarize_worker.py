@@ -253,7 +253,7 @@ def _match_to_voice_library(
     gracefully to the auto-labels case.
     """
     try:
-        with open(voice_lib_path, "r", encoding="utf-8") as f:
+        with open(voice_lib_path, encoding="utf-8") as f:
             voices_raw = json.load(f)
     except Exception as e:
         print(f"voice library load failed: {e}", file=sys.stderr, flush=True)
@@ -263,9 +263,11 @@ def _match_to_voice_library(
         return speaker_turns
 
     import base64
+    import binascii
+
     import numpy as np
-    from scipy.optimize import linear_sum_assignment
     from pyannote.audio import Inference, Model
+    from scipy.optimize import linear_sum_assignment
 
     # Parse enrolled voices. Skip malformed entries silently; an isolated
     # bad row in config shouldn't kill the entire matching pass.
@@ -278,7 +280,13 @@ def _match_to_voice_library(
             continue
         try:
             vec = np.frombuffer(base64.b64decode(enc), dtype=np.float32)
-        except Exception:
+        except (ValueError, TypeError, binascii.Error) as e:
+            # Corrupted base64 / wrong byte length — skip but warn via the
+            # subprocess-stderr channel that the parent captures.
+            print(
+                f"warning: skipping voice {name!r}: bad embedding ({e})",
+                file=sys.stderr, flush=True,
+            )
             continue
         norm = float(np.linalg.norm(vec)) + 1e-10
         enrolled_embs.append((vec / norm).astype(np.float32))
@@ -345,7 +353,9 @@ def _match_to_voice_library(
     det_idx, enr_idx = linear_sum_assignment(-sim)  # max-cost via negation
 
     rename: dict[str, str] = {}
-    for di, ei in zip(det_idx, enr_idx):
+    # linear_sum_assignment guarantees |det_idx| == |enr_idx|; strict=True
+    # codifies the invariant so any future regression surfaces loudly.
+    for di, ei in zip(det_idx, enr_idx, strict=True):
         if sim[di, ei] >= _ENROLL_MATCH_THRESHOLD:
             rename[detected_names[di]] = enrolled_names[ei]
             print(

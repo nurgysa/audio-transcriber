@@ -23,8 +23,15 @@ import customtkinter as ctk
 import psutil
 
 from theme import (
-    BG, BLUE, BLUE_DIM, BORDER, FONT, GREEN, RED,
-    SURFACE, SURFACE_BRIGHT, TEXT_PRIMARY, TEXT_SECONDARY, t,
+    BG,
+    FONT,
+    GREEN,
+    RED,
+    SURFACE,
+    SURFACE_BRIGHT,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    t,
 )
 from ui.widgets import card, label
 

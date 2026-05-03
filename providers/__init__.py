@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from .assemblyai import AssemblyAIProvider
 from .base import (
-    ProviderError, TranscriptionOptions, TranscriptionProvider,
+    ProviderError,
+    TranscriptionOptions,
+    TranscriptionProvider,
     TranscriptionResult,
 )
-
 
 # Display name shown in the dropdown → provider class.
 # Order is preserved by Python 3.7+ dict semantics; first entry is the

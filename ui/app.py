@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -12,8 +13,17 @@ from audio_cutter import AudioCutter
 from logging_setup import crash_log_path, get_logger, init_logging
 from recorder import Recorder
 from theme import (
-    BG, BLUE, BLUE_DIM, BLUE_SURFACE, BORDER, FONT, GREEN, INPUT_BG,
-    PROGRESS_BG, RED, SURFACE, SURFACE_BRIGHT, TEXT_PRIMARY, TEXT_SECONDARY,
+    BG,
+    BLUE,
+    BLUE_DIM,
+    BORDER,
+    FONT,
+    GREEN,
+    PROGRESS_BG,
+    RED,
+    SURFACE,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
 )
 from transcriber import Transcriber, TranscriptionCancelled
 from ui.dialogs.history import HistoryDialog
@@ -22,11 +32,20 @@ from ui.dialogs.system_monitor import SystemMonitorDialog
 from ui.dialogs.terms import TermsDialog
 from ui.dialogs.voices import VoicesDialog
 from ui.widgets import (
-    card, label, option_menu, primary_button, tonal_button,
+    card,
+    label,
+    option_menu,
+    primary_button,
+    tonal_button,
 )
 from utils import (
-    check_ffmpeg, create_history_entry, get_output_path,
-    load_config, save_config, save_transcript, validate_audio,
+    check_ffmpeg,
+    create_history_entry,
+    get_output_path,
+    load_config,
+    save_config,
+    save_transcript,
+    validate_audio,
 )
 
 init_logging()
@@ -596,15 +615,22 @@ class App(ctk.CTk):
     # ── Settings handlers ─────────────────────────────────────
 
     def _paste_token_btn(self):
-        """Handle paste via button click."""
+        """Handle paste via button click.
+
+        TclError = empty clipboard or non-text content (silent — user just
+        clicked Paste without anything to paste). OSError = config save
+        failed (real problem: token won't persist across launches).
+        """
         try:
             text = self.clipboard_get().strip()
             self._hf_token_var.set(text)
             if text:
                 self._config["hf_token"] = text
                 save_config(self._config)
-        except Exception:
-            pass
+        except tk.TclError:
+            return
+        except OSError as e:
+            logger.warning("Failed to persist HF token to config.json: %s", e)
 
     def _toggle_diarization(self):
         # Only the speaker-count menu lives on the main window; HF Token and
@@ -703,15 +729,20 @@ class App(ctk.CTk):
 
     def _paste_cloud_api_key(self) -> None:
         """Same paste-from-clipboard helper as the HF token, scoped to
-        the cloud API key field."""
+        the cloud API key field.
+
+        See ``_paste_token_btn`` for exception-handling rationale.
+        """
         try:
             text = self.clipboard_get().strip()
             self._cloud_api_key_var.set(text)
             if text:
                 self._config["cloud_api_key"] = text
                 save_config(self._config)
-        except Exception:
-            pass
+        except tk.TclError:
+            return
+        except OSError as e:
+            logger.warning("Failed to persist cloud API key to config.json: %s", e)
 
     def _select_file(self):
         path = filedialog.askopenfilename(

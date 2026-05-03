@@ -35,7 +35,7 @@ def check_ffmpeg() -> bool:
 
 def load_config() -> dict:
     if os.path.isfile(_CONFIG_PATH):
-        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+        with open(_CONFIG_PATH, encoding="utf-8") as f:
             return json.load(f)
     return {}
 

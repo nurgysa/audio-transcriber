@@ -17,6 +17,5 @@ faulthandler.enable(file=_FAULT_LOG, all_threads=True)
 
 from ui.app import main  # noqa: E402  (must follow faulthandler.enable)
 
-
 if __name__ == "__main__":
     main()

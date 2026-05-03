@@ -5,8 +5,17 @@ from __future__ import annotations
 import customtkinter as ctk
 
 from theme import (
-    BG, BLUE, BLUE_DIM, BORDER, FONT, INPUT_BG, RED,
-    SURFACE, SURFACE_BRIGHT, TEXT_PRIMARY, TEXT_SECONDARY,
+    BG,
+    BLUE,
+    BLUE_DIM,
+    BORDER,
+    FONT,
+    INPUT_BG,
+    RED,
+    SURFACE,
+    SURFACE_BRIGHT,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
 )
 from utils import save_config
 
@@ -103,7 +112,12 @@ class TermsDialog(ctk.CTkToplevel):
             return
 
         for i, term in enumerate(self._terms):
-            row = ctk.CTkFrame(self._list_frame_outer, fg_color=SURFACE_BRIGHT, corner_radius=10, height=40)
+            row = ctk.CTkFrame(
+                self._list_frame_outer,
+                fg_color=SURFACE_BRIGHT,
+                corner_radius=10,
+                height=40,
+            )
             row.grid(row=i, column=0, padx=4, pady=3, sticky="ew")
             row.grid_columnconfigure(0, weight=1)
 

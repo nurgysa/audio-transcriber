@@ -3,9 +3,13 @@ import numpy as np
 import pytest
 
 from voice_library import (
-    decode_embedding, encode_embedding, l2_normalize,
-    remove_voice_from_config, save_voice_to_config,
-    voice_names, voices_from_config,
+    decode_embedding,
+    encode_embedding,
+    l2_normalize,
+    remove_voice_from_config,
+    save_voice_to_config,
+    voice_names,
+    voices_from_config,
 )
 
 

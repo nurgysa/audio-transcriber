@@ -18,25 +18,31 @@ isolated.
 """
 from __future__ import annotations
 
-import json
 import os
 import threading
 import webbrowser
 from collections import deque
 from datetime import datetime, timedelta
 from tkinter import messagebox
-from typing import Optional
 
 import customtkinter as ctk
 
 from theme import (
-    BG, BLUE_DIM, BORDER, FONT, GREEN, INPUT_BG, RED, SURFACE,
-    TEXT_PRIMARY, TEXT_SECONDARY,
+    BG,
+    BLUE_DIM,
+    BORDER,
+    FONT,
+    GREEN,
+    INPUT_BG,
+    RED,
+    SURFACE,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
 )
-# Note: BLUE_DIM is reserved for the _TaskRow checkbox accent in Task 6.2-3.
-from ui.widgets import label, option_menu, primary_button, tonal_button
-from utils import save_config
 
+# Note: BLUE_DIM is reserved for the _TaskRow checkbox accent in Task 6.2-3.
+from ui.widgets import label, primary_button, tonal_button
+from utils import save_config
 
 # Same curated list as Settings → OpenRouter section, kept in sync manually.
 # (Phase 6.4 may replace both with a live /models browser.)
@@ -145,8 +151,8 @@ class _TaskRow(ctk.CTkFrame):
 
     def set_status_visual(
         self, status, *,
-        identifier: Optional[str] = None,
-        error_code: Optional[str] = None,
+        identifier: str | None = None,
+        error_code: str | None = None,
     ) -> None:
         """Replace the checkbox with a status badge after send begins.
 
@@ -208,7 +214,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         *,
         transcript: str,
         history_folder: str,
-        transcript_lang: Optional[str],
+        transcript_lang: str | None,
         config: dict,
     ):
         super().__init__(parent)
@@ -229,7 +235,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # save_tasks (extracted_at, model, team_id, team_name, transcript_lang).
         self._tasks: list = []      # list[Task]
         self._task_rows: list = []  # list[_TaskRow] — populated by _render_task_list
-        self._selected_index: Optional[int] = None
+        self._selected_index: int | None = None
         self._meta: dict = {}       # populated post-extract or post-load
         # Undo stack (5 deep) of deepcopy(self._tasks) snapshots before destructive ops.
         self._undo_stack: deque = deque(maxlen=5)
@@ -434,7 +440,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
         def worker():
             try:
-                from tasks.linear_client import LinearClient, LinearError
+                from tasks.linear_client import LinearClient
                 client = LinearClient(api_key)
                 self._active_clients.append(client)
                 try:
@@ -511,7 +517,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             daemon=True,
         ).start()
 
-    def _selected_team(self) -> Optional[dict]:
+    def _selected_team(self) -> dict | None:
         label_value = self._team_var.get()
         for t in self._teams:
             if f"{t['name']} ({t['key']})" == label_value:
@@ -519,7 +525,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         return None
 
     def _run_extraction(self, team: dict, model: str) -> None:
-        from tasks.extractor import extract, ExtractionError
+        from tasks.extractor import ExtractionError, extract
         from tasks.linear_client import LinearClient, LinearError
         from tasks.openrouter_client import OpenRouterClient, OpenRouterError
         from tasks.persistence import save_tasks_raw
@@ -628,7 +634,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             text=f"Сохранено: {rel}", text_color=TEXT_SECONDARY,
         )
 
-    def _on_extract_error(self, msg: str, raw_response: Optional[str]) -> None:
+    def _on_extract_error(self, msg: str, raw_response: str | None) -> None:
         self._status_label.configure(text=f"✗ {msg}", text_color=RED)
         if raw_response:
             import logging
@@ -866,10 +872,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
         self._set_selection(new_index)
 
-    def _set_selection(self, new_index: Optional[int]) -> None:
+    def _set_selection(self, new_index: int | None) -> None:
         """Update visual selection + form binding."""
         # Clear previous visual.
-        if self._selected_index is not None and self._selected_index < len(getattr(self, "_task_rows", [])):
+        rows = getattr(self, "_task_rows", [])
+        if self._selected_index is not None and self._selected_index < len(rows):
             try:
                 self._task_rows[self._selected_index].set_selected_visual(False)
             except Exception:
@@ -1127,7 +1134,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
         linear = LinearClient(api_key)
         self._active_clients.append(linear)
-        error_msg: Optional[str] = None
+        error_msg: str | None = None
         try:
             for _ in send_tasks_iter(
                 self._tasks,
@@ -1185,7 +1192,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # Live update of the count on the Send button as tasks transition.
         self._refresh_send_button_label()
 
-    def _on_send_finished(self, error_msg: Optional[str]) -> None:
+    def _on_send_finished(self, error_msg: str | None) -> None:
         """Main-thread completion callback for the send worker."""
         self._set_busy(False)
         self._refresh_send_button_label()
@@ -1226,6 +1233,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
     def _try_load_existing_tasks(self) -> None:
         from pathlib import Path
+
         from tasks.persistence import MUTABLE_FILENAME, load_tasks
         path = Path(self._history_folder) / MUTABLE_FILENAME
         if not path.is_file():

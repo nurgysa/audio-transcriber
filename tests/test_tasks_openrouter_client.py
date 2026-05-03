@@ -4,10 +4,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-import requests   # used by the ConnectionError test below
+import requests  # used by the ConnectionError test below
 
 from tasks.openrouter_client import OpenRouterClient, OpenRouterError
-
 
 # ── construction ──────────────────────────────────────────────────────
 
