@@ -414,7 +414,9 @@ class App(ctk.CTk):
                 self._settings_dialog.lift()
                 self._settings_dialog.focus_set()
                 return
-            except Exception:
+            except tk.TclError:
+                # Dialog window was destroyed before <Destroy> fired (race
+                # on Windows after alt-F4) — drop the stale ref and re-open.
                 self._settings_dialog = None
         self._settings_dialog = SettingsDialog(self)
         self._settings_dialog.bind(
@@ -437,7 +439,8 @@ class App(ctk.CTk):
                 self._monitor_dialog.lift()
                 self._monitor_dialog.focus_set()
                 return
-            except Exception:
+            except tk.TclError:
+                # Same race as in _open_settings_dialog — dialog gone, refresh.
                 self._monitor_dialog = None
         self._monitor_dialog = SystemMonitorDialog(self)
         self._monitor_dialog.bind(
@@ -453,7 +456,8 @@ class App(ctk.CTk):
         if self._settings_dialog is not None:
             try:
                 self._settings_dialog._refresh_summaries()
-            except Exception:
+            except tk.TclError:
+                # Dialog widget was destroyed mid-refresh — nothing to update.
                 pass
 
     def _open_terms_dialog(self):
@@ -716,7 +720,9 @@ class App(ctk.CTk):
         if self._monitor_dialog is not None:
             try:
                 self._monitor_dialog._apply_theme()
-            except Exception:
+            except tk.TclError:
+                # Monitor dialog destroyed during theme switch — UI will pick
+                # up the new theme on next open.
                 pass
         if self._cutter is not None:
             try:
@@ -724,7 +730,7 @@ class App(ctk.CTk):
                 # protects against AttributeError on a destroyed widget.
                 if self._cutter.winfo_exists():
                     self._cutter._apply_theme()
-            except Exception:
+            except tk.TclError:
                 pass
 
     def _paste_cloud_api_key(self) -> None:
