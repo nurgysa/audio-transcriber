@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Callable, Iterator
+from collections.abc import Callable, Iterator
 
 from tasks.linear_client import LinearError
 from tasks.schema import Priority, Task, TaskStatus

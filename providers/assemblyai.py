@@ -23,10 +23,11 @@ import time
 import requests
 
 from .base import (
-    ProviderError, TranscriptionOptions, TranscriptionProvider,
+    ProviderError,
+    TranscriptionOptions,
+    TranscriptionProvider,
     TranscriptionResult,
 )
-
 
 _API_BASE = "https://api.assemblyai.com/v2"
 # Upload chunk size for streaming the audio into POST /v2/upload. 5 MB is a

@@ -12,8 +12,17 @@ from audio_cutter import AudioCutter
 from logging_setup import crash_log_path, get_logger, init_logging
 from recorder import Recorder
 from theme import (
-    BG, BLUE, BLUE_DIM, BLUE_SURFACE, BORDER, FONT, GREEN, INPUT_BG,
-    PROGRESS_BG, RED, SURFACE, SURFACE_BRIGHT, TEXT_PRIMARY, TEXT_SECONDARY,
+    BG,
+    BLUE,
+    BLUE_DIM,
+    BORDER,
+    FONT,
+    GREEN,
+    PROGRESS_BG,
+    RED,
+    SURFACE,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
 )
 from transcriber import Transcriber, TranscriptionCancelled
 from ui.dialogs.history import HistoryDialog
@@ -22,11 +31,20 @@ from ui.dialogs.system_monitor import SystemMonitorDialog
 from ui.dialogs.terms import TermsDialog
 from ui.dialogs.voices import VoicesDialog
 from ui.widgets import (
-    card, label, option_menu, primary_button, tonal_button,
+    card,
+    label,
+    option_menu,
+    primary_button,
+    tonal_button,
 )
 from utils import (
-    check_ffmpeg, create_history_entry, get_output_path,
-    load_config, save_config, save_transcript, validate_audio,
+    check_ffmpeg,
+    create_history_entry,
+    get_output_path,
+    load_config,
+    save_config,
+    save_transcript,
+    validate_audio,
 )
 
 init_logging()

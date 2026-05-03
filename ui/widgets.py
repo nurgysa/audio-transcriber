@@ -11,8 +11,17 @@ from __future__ import annotations
 import customtkinter as ctk
 
 from theme import (
-    BG, BLUE, BLUE_DIM, BLUE_SURFACE, BORDER, FONT, INPUT_BG,
-    SURFACE, SURFACE_BRIGHT, TEXT_PRIMARY, TEXT_SECONDARY,
+    BG,
+    BLUE,
+    BLUE_DIM,
+    BLUE_SURFACE,
+    BORDER,
+    FONT,
+    INPUT_BG,
+    SURFACE,
+    SURFACE_BRIGHT,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
 )
 
 

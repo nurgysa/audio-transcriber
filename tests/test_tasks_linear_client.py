@@ -8,7 +8,6 @@ import requests
 
 from tasks.linear_client import LinearClient, LinearError
 
-
 # ── construction ──────────────────────────────────────────────────────
 
 

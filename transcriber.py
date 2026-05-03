@@ -1,15 +1,14 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 
 # ctranslate2 must be imported before torch on Windows to avoid CUDA DLL conflicts.
 # audio_io is torch-free (see its module docstring), so importing it here is safe.
 import ctranslate2  # noqa: F401
-import shutil
-import tempfile
-
 from faster_whisper import WhisperModel
 
 from audio_io import ensure_wav, get_duration_s, split_wav_into_chunks
@@ -528,11 +527,16 @@ class Transcriber:
                     proc.wait()
                     handle["t_out"].join()
                     handle["t_err"].join()
-                    raise TranscriptionCancelled()
+                    # Cancel is a user-initiated signal, not a wrapped timeout
+                    # from the per-poll wait — `from None` keeps the chain clean.
+                    raise TranscriptionCancelled() from None
                 if elapsed >= deadline:
                     proc.kill()
                     proc.wait()
-                    raise subprocess.TimeoutExpired(proc.args, deadline)
+                    # The outer "we exhausted the 1h deadline" timeout is
+                    # semantically distinct from any single 0.25s poll timeout
+                    # we caught — chain would just confuse downstream readers.
+                    raise subprocess.TimeoutExpired(proc.args, deadline) from None
 
         handle["t_out"].join()
         handle["t_err"].join()
@@ -595,7 +599,7 @@ class Transcriber:
         # Local imports keep providers/ off the import path of CLI tools
         # like ``audio_cutter`` that don't need it. Also avoids paying the
         # ``requests`` import cost at module load.
-        from providers import get_provider, ProviderError, TranscriptionOptions
+        from providers import ProviderError, TranscriptionOptions, get_provider
 
         try:
             provider = get_provider(cloud_provider, cloud_api_key)
@@ -1021,31 +1025,47 @@ def _assign_speakers_word_level(
         current_words: list[dict] = []
         current_speaker: str | None = None
 
-        def _flush() -> None:
-            if not current_words:
-                return
-            text = "".join(w["word"] for w in current_words).strip()
-            if not text:
-                return  # pure-whitespace (leading space tokens) — skip
-            out.append({
-                "start": current_words[0]["start"],
-                "end": current_words[-1]["end"],
-                "text": text,
-                "speaker": current_speaker,
-            })
-
         for w in words:
             mid = (w["start"] + w["end"]) / 2.0
             sp = _speaker_at_time(mid, speaker_turns)
             if sp != current_speaker and current_words:
-                _flush()
+                _flush_word_group(current_words, current_speaker, out)
                 current_words = []
             current_speaker = sp
             current_words.append(w)
 
-        _flush()
+        _flush_word_group(current_words, current_speaker, out)
 
     return out
+
+
+def _flush_word_group(
+    words: list[dict],
+    speaker: str | None,
+    out: list[dict],
+) -> None:
+    """Append one sub-segment ({start, end, text, speaker}) for a word run.
+
+    Module-level (not nested in :func:`_assign_speakers_word_level`'s loop)
+    to avoid B023 — a closure over the loop's mutable ``current_words`` /
+    ``current_speaker`` works only because callers invoke it synchronously
+    in the same iteration; making the dependency explicit via parameters
+    is clearer and ruff-clean.
+
+    Skips word groups that are empty or pure-whitespace (e.g. a leading
+    space token from Whisper's tokenizer that would render as "").
+    """
+    if not words:
+        return
+    text = "".join(w["word"] for w in words).strip()
+    if not text:
+        return
+    out.append({
+        "start": words[0]["start"],
+        "end": words[-1]["end"],
+        "text": text,
+        "speaker": speaker,
+    })
 
 
 def _speaker_at_time(

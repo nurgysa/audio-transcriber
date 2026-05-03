@@ -35,7 +35,11 @@ def _make_linear(issues_iter=None, raise_on=None):
             raise raise_on[idx]
         if idx < len(issues_iter):
             return issues_iter[idx]
-        return {"id": f"id-{idx}", "identifier": f"ENG-{100 + idx}", "url": f"https://linear.app/x/ENG-{100 + idx}"}
+        return {
+            "id": f"id-{idx}",
+            "identifier": f"ENG-{100 + idx}",
+            "url": f"https://linear.app/x/ENG-{100 + idx}",
+        }
 
     client.create_issue.side_effect = _create
     return client

@@ -8,11 +8,23 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from theme import (
-    BG, BLUE, BLUE_DIM, BLUE_SURFACE, BORDER, FONT, INPUT_BG, RED,
-    SURFACE, SURFACE_BRIGHT, TEXT_PRIMARY, TEXT_SECONDARY,
+    BG,
+    BLUE,
+    BLUE_DIM,
+    BLUE_SURFACE,
+    BORDER,
+    FONT,
+    INPUT_BG,
+    RED,
+    SURFACE,
+    SURFACE_BRIGHT,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
 )
 from utils import (
-    delete_history_entry, list_history_entries, open_in_explorer,
+    delete_history_entry,
+    list_history_entries,
+    open_in_explorer,
     save_transcript,
 )
 
@@ -21,7 +33,7 @@ def _read_transcript(folder_path: str) -> str:
     """Read transcript.txt from a history folder. Empty string on failure."""
     txt_path = os.path.join(folder_path, "transcript.txt")
     try:
-        with open(txt_path, "r", encoding="utf-8") as f:
+        with open(txt_path, encoding="utf-8") as f:
             return f.read()
     except OSError:
         return ""

@@ -19,14 +19,26 @@ import threading
 import customtkinter as ctk
 
 from theme import (
-    BG, BLUE, BLUE_DIM, BORDER, FONT, GREEN, INPUT_BG, RED,
-    SURFACE, TEXT_PRIMARY, TEXT_SECONDARY,
+    BG,
+    BLUE,
+    BLUE_DIM,
+    BORDER,
+    FONT,
+    GREEN,
+    INPUT_BG,
+    RED,
+    SURFACE,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
 )
 from ui.widgets import (
-    card, label, option_menu, primary_button, tonal_button,
+    card,
+    label,
+    option_menu,
+    primary_button,
+    tonal_button,
 )
 from utils import save_config
-
 
 # Curated dropdown for OpenRouter default model. Slug → display label.
 # Display label keeps the slug visible — power users recognize 'sonnet-4.5'
@@ -128,7 +140,7 @@ class SettingsDialog(ctk.CTkToplevel):
         ).grid(row=1, column=0, columnspan=2, padx=4, pady=(0, 4), sticky="w")
 
     def _build_transcription_section(self, parent) -> None:
-        from ui.app import LANGUAGES, MODELS, DEVICES
+        from ui.app import DEVICES, LANGUAGES, MODELS
 
         section = self._section_card(parent, "Транскрипция", row=1)
 
@@ -500,7 +512,8 @@ class SettingsDialog(ctk.CTkToplevel):
                 # Imported lazily to avoid pulling tasks/openrouter_client (and
                 # thus `requests`) at Settings-dialog construction time.
                 from tasks.openrouter_client import (
-                    OpenRouterClient, OpenRouterError,
+                    OpenRouterClient,
+                    OpenRouterError,
                 )
                 client = OpenRouterClient(key)
                 try:

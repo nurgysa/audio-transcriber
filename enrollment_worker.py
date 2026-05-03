@@ -31,9 +31,9 @@ from contextlib import contextmanager
 # mojibake on Windows' default cp1251 pipe encoding.
 sys.stdout.reconfigure(encoding="utf-8")
 
+import numpy as np  # noqa: E402
 import soundfile as sf  # noqa: E402
 import torch  # noqa: E402
-import numpy as np  # noqa: E402
 
 # cuDNN on GTX 1650 Ti crashes pyannote with HOST_ALLOCATION_FAILED —
 # same issue as the diarization worker. Native CUDA kernels complete

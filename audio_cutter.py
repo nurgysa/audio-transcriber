@@ -20,11 +20,27 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 
-from audio_io import SAMPLE_RATE, ffmpeg_trim, load_mono_float32
+from audio_io import ffmpeg_trim, load_mono_float32
 from theme import (
-    BG, BLUE, BLUE_DIM, BLUE_SURFACE, BORDER, FONT, GREEN, INPUT_BG,
-    MARKER_END_COLOR, MARKER_START_COLOR, RED, SURFACE, SURFACE_BRIGHT,
-    TEXT_PRIMARY, TEXT_SECONDARY, WAVE_COLOR, WAVE_SELECTED, YELLOW, t,
+    BG,
+    BLUE,
+    BLUE_DIM,
+    BLUE_SURFACE,
+    BORDER,
+    FONT,
+    GREEN,
+    INPUT_BG,
+    MARKER_END_COLOR,
+    MARKER_START_COLOR,
+    RED,
+    SURFACE,
+    SURFACE_BRIGHT,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    WAVE_COLOR,
+    WAVE_SELECTED,
+    YELLOW,
+    t,
 )
 
 
