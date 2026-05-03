@@ -704,72 +704,38 @@ class App(ctk.CTk):
 
     def _on_appearance_changed(self, value: str) -> None:
         """
-        Switch theme live and persist the choice.
+        Persist the theme choice. Apply on NEXT LAUNCH only.
 
-        Two-phase to mask CustomTkinter's slow Tk repaint on Windows
-        light→dark (~3-15 sec). Phase 1 (this method) shows a status
-        message and force-paints it so the user sees the app is working,
-        then schedules phase 2 via ``after(50, ...)`` so the painted
-        status survives before set_appearance_mode blocks the main loop.
+        Why not live-switch: ``ctk.set_appearance_mode`` triggers a
+        synchronous Tk repaint of every CTk widget in the process. On
+        Windows light→dark this takes 3-15 sec and the window appears
+        frozen (Tk does NOT yield the main loop during GDI palette
+        allocation). Even after_idle / two-phase tricks don't help —
+        the freeze is in C-level Tk code we can't preempt.
 
-        Known limitation: the lag itself isn't fixable from our code —
-        it's in Tk's synchronous repaint via Windows GDI when allocating
-        the dark palette. dark→light keeps the bright palette warm and
-        is fast. Verified pre-F4 (origin/main commit babd798) — not a
-        regression from the codebase-review work.
+        The startup path is fast in either palette because the first
+        paint allocates the palette once and applies it to a fresh
+        widget tree. So the workaround: save the choice, tell the user
+        to restart, never run the slow runtime switch at all.
+
+        If a future CustomTkinter release fixes this (or we move off
+        Tk), we can replace this method with the live-switch
+        implementation kept in git history.
         """
-        # Persist immediately so even if the user kills the app mid-paint,
-        # the choice survives the next launch.
+        # Persist immediately so the next launch picks up the new theme.
         self._config["appearance_mode"] = value
         save_config(self._config)
 
-        # UX guard: tell the user what's about to happen, then disable the
-        # dropdown so they can't click it again and queue a duplicate switch.
-        self._lbl_status.configure(
-            text="Переключение темы (до 15 сек)...",
+        # Inform the user. Modal — they have to acknowledge before the
+        # dialog continues, which prevents click-spam on the dropdown.
+        messagebox.showinfo(
+            "Тема сохранена",
+            f"Тема «{value}» будет применена при следующем запуске.\n\n"
+            "Живое переключение временно отключено: на Windows оно "
+            "замораживает окно на 3-15 секунд (известная проблема "
+            "CustomTkinter + Tk при перерисовке палитры). Перезапуск "
+            "применяет тему мгновенно.",
         )
-        if hasattr(self, "_appearance_menu"):
-            self._appearance_menu.configure(state="disabled")
-        # Force the status message to paint BEFORE set_appearance_mode
-        # takes over the main loop. Without this the message wouldn't
-        # render until after the slow repaint finishes.
-        self.update_idletasks()
-
-        # Defer the actual switch by one event-loop tick so the status
-        # update above is guaranteed to have painted.
-        self.after(50, lambda: self._do_theme_switch(value))
-
-    def _do_theme_switch(self, value: str) -> None:
-        """Phase 2: actually flip the appearance mode + redraw Canvas children.
-
-        Runs on the main thread (Tk requires it). Blocks the UI for the
-        duration of CTk's widget walk + Windows GDI repaint, which is the
-        lag the user perceives. Re-enables the dropdown and clears the
-        status when done.
-        """
-        ctk.set_appearance_mode(APPEARANCE_MODES.get(value, "system"))
-        # Notify Canvas-using children. None of these are required to be
-        # open; the helper is a no-op when the dialog reference is None.
-        if self._monitor_dialog is not None:
-            try:
-                self._monitor_dialog._apply_theme()
-            except tk.TclError:
-                # Monitor dialog destroyed during theme switch — UI will pick
-                # up the new theme on next open.
-                pass
-        if self._cutter is not None:
-            try:
-                # Cutter window may have been closed already — winfo_exists
-                # protects against AttributeError on a destroyed widget.
-                if self._cutter.winfo_exists():
-                    self._cutter._apply_theme()
-            except tk.TclError:
-                pass
-
-        # Restore controls.
-        self._lbl_status.configure(text="")
-        if hasattr(self, "_appearance_menu"):
-            self._appearance_menu.configure(state="normal")
 
     def _paste_cloud_api_key(self) -> None:
         """Same paste-from-clipboard helper as the HF token, scoped to
