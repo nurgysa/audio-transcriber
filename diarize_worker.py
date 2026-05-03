@@ -263,6 +263,7 @@ def _match_to_voice_library(
         return speaker_turns
 
     import base64
+    import binascii
 
     import numpy as np
     from pyannote.audio import Inference, Model
@@ -279,7 +280,13 @@ def _match_to_voice_library(
             continue
         try:
             vec = np.frombuffer(base64.b64decode(enc), dtype=np.float32)
-        except Exception:
+        except (ValueError, TypeError, binascii.Error) as e:
+            # Corrupted base64 / wrong byte length — skip but warn via the
+            # subprocess-stderr channel that the parent captures.
+            print(
+                f"warning: skipping voice {name!r}: bad embedding ({e})",
+                file=sys.stderr, flush=True,
+            )
             continue
         norm = float(np.linalg.norm(vec)) + 1e-10
         enrolled_embs.append((vec / norm).astype(np.float32))

@@ -14,7 +14,9 @@ to config.json — no extra save logic needed here.
 
 from __future__ import annotations
 
+import logging
 import threading
+import tkinter as tk
 
 import customtkinter as ctk
 
@@ -39,6 +41,8 @@ from ui.widgets import (
     tonal_button,
 )
 from utils import save_config
+
+_logger = logging.getLogger(__name__)
 
 # Curated dropdown for OpenRouter default model. Slug → display label.
 # Display label keeps the slug visible — power users recognize 'sonnet-4.5'
@@ -390,8 +394,10 @@ class SettingsDialog(ctk.CTkToplevel):
             if text:
                 self._parent._config["openrouter_api_key"] = text
                 save_config(self._parent._config)
-        except Exception:
-            pass
+        except tk.TclError:
+            return  # empty clipboard / non-text — silent
+        except OSError as e:
+            _logger.warning("Failed to persist OpenRouter key: %s", e)
 
     # ── Linear section (Phase 6.0 Task 15) ────────────────────────────
 
@@ -436,8 +442,10 @@ class SettingsDialog(ctk.CTkToplevel):
             if text:
                 self._parent._config["linear_api_key"] = text
                 save_config(self._parent._config)
-        except Exception:
-            pass
+        except tk.TclError:
+            return  # empty clipboard / non-text — silent
+        except OSError as e:
+            _logger.warning("Failed to persist Linear key: %s", e)
 
     def _validate_linear(self) -> None:
         """Make a single viewer GraphQL query. Show display name on success.

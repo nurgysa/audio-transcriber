@@ -17,6 +17,7 @@ when the user picked auto.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 
@@ -28,6 +29,8 @@ from .base import (
     TranscriptionProvider,
     TranscriptionResult,
 )
+
+_logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.assemblyai.com/v2"
 # Upload chunk size for streaming the audio into POST /v2/upload. 5 MB is a
@@ -271,15 +274,24 @@ class AssemblyAIProvider(TranscriptionProvider):
                 slept += 0.25
 
     def _cancel_remote(self, transcript_id: str) -> None:
-        """Best-effort DELETE on cancel. Errors are swallowed."""
+        """Best-effort DELETE on cancel.
+
+        Network/auth failures are logged but not raised — by the time we
+        call this, the user has already cancelled and the UI has moved on.
+        However, repeated DELETE failures mean we're being billed for stuck
+        jobs, so the warning level surfaces the issue in app.log.
+        """
         try:
             requests.delete(
                 f"{_API_BASE}/transcript/{transcript_id}",
                 headers=self._headers,
                 timeout=10,
             )
-        except Exception:
-            pass
+        except requests.RequestException as e:
+            _logger.warning(
+                "AssemblyAI cancel-DELETE failed for %s (job may stay billable): %s",
+                transcript_id, e,
+            )
 
     @staticmethod
     def _check_cancel(cancel_event) -> None:
