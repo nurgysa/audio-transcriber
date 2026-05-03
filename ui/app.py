@@ -706,22 +706,47 @@ class App(ctk.CTk):
         """
         Switch theme live and persist the choice.
 
-        CustomTkinter's set_appearance_mode walks every CTk widget in the
-        process and re-resolves its ``(light, dark)`` tuple colors — that
-        covers the bulk of our UI. ``tk.Canvas`` instances (waveform,
-        sparklines) don't speak tuples and need explicit redraw; we
-        delegate that to each open child widget that knows about Canvas.
+        Two-phase to mask CustomTkinter's slow Tk repaint on Windows
+        light→dark (~3-15 sec). Phase 1 (this method) shows a status
+        message and force-paints it so the user sees the app is working,
+        then schedules phase 2 via ``after(50, ...)`` so the painted
+        status survives before set_appearance_mode blocks the main loop.
 
-        Known issue: light→dark on Windows can take 3-15 seconds during
-        which the window appears unresponsive. The Python work itself
-        is ~250ms (verified with timing prints); the lag is in Tk's
-        synchronous repaint of all widgets via Windows GDI (not in our
-        code). dark→light is much faster because GDI keeps the bright
-        palette warm. Pre-existing in CustomTkinter; documented here so
-        a future maintainer doesn't chase it as a regression.
+        Known limitation: the lag itself isn't fixable from our code —
+        it's in Tk's synchronous repaint via Windows GDI when allocating
+        the dark palette. dark→light keeps the bright palette warm and
+        is fast. Verified pre-F4 (origin/main commit babd798) — not a
+        regression from the codebase-review work.
         """
+        # Persist immediately so even if the user kills the app mid-paint,
+        # the choice survives the next launch.
         self._config["appearance_mode"] = value
         save_config(self._config)
+
+        # UX guard: tell the user what's about to happen, then disable the
+        # dropdown so they can't click it again and queue a duplicate switch.
+        self._lbl_status.configure(
+            text="Переключение темы (до 15 сек)...",
+        )
+        if hasattr(self, "_appearance_menu"):
+            self._appearance_menu.configure(state="disabled")
+        # Force the status message to paint BEFORE set_appearance_mode
+        # takes over the main loop. Without this the message wouldn't
+        # render until after the slow repaint finishes.
+        self.update_idletasks()
+
+        # Defer the actual switch by one event-loop tick so the status
+        # update above is guaranteed to have painted.
+        self.after(50, lambda: self._do_theme_switch(value))
+
+    def _do_theme_switch(self, value: str) -> None:
+        """Phase 2: actually flip the appearance mode + redraw Canvas children.
+
+        Runs on the main thread (Tk requires it). Blocks the UI for the
+        duration of CTk's widget walk + Windows GDI repaint, which is the
+        lag the user perceives. Re-enables the dropdown and clears the
+        status when done.
+        """
         ctk.set_appearance_mode(APPEARANCE_MODES.get(value, "system"))
         # Notify Canvas-using children. None of these are required to be
         # open; the helper is a no-op when the dialog reference is None.
@@ -740,6 +765,11 @@ class App(ctk.CTk):
                     self._cutter._apply_theme()
             except tk.TclError:
                 pass
+
+        # Restore controls.
+        self._lbl_status.configure(text="")
+        if hasattr(self, "_appearance_menu"):
+            self._appearance_menu.configure(state="normal")
 
     def _paste_cloud_api_key(self) -> None:
         """Same paste-from-clipboard helper as the HF token, scoped to
