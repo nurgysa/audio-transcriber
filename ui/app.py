@@ -704,34 +704,38 @@ class App(ctk.CTk):
 
     def _on_appearance_changed(self, value: str) -> None:
         """
-        Switch theme live and persist the choice.
+        Persist the theme choice. Apply on NEXT LAUNCH only.
 
-        CustomTkinter's set_appearance_mode walks every CTk widget in the
-        process and re-resolves its ``(light, dark)`` tuple colors — that
-        covers the bulk of our UI. ``tk.Canvas`` instances (waveform,
-        sparklines) don't speak tuples and need explicit redraw; we
-        delegate that to each open child widget that knows about Canvas.
+        Why not live-switch: ``ctk.set_appearance_mode`` triggers a
+        synchronous Tk repaint of every CTk widget in the process. On
+        Windows light→dark this takes 3-15 sec and the window appears
+        frozen (Tk does NOT yield the main loop during GDI palette
+        allocation). Even after_idle / two-phase tricks don't help —
+        the freeze is in C-level Tk code we can't preempt.
+
+        The startup path is fast in either palette because the first
+        paint allocates the palette once and applies it to a fresh
+        widget tree. So the workaround: save the choice, tell the user
+        to restart, never run the slow runtime switch at all.
+
+        If a future CustomTkinter release fixes this (or we move off
+        Tk), we can replace this method with the live-switch
+        implementation kept in git history.
         """
+        # Persist immediately so the next launch picks up the new theme.
         self._config["appearance_mode"] = value
         save_config(self._config)
-        ctk.set_appearance_mode(APPEARANCE_MODES.get(value, "system"))
-        # Notify Canvas-using children. None of these are required to be
-        # open; the helper is a no-op when the dialog reference is None.
-        if self._monitor_dialog is not None:
-            try:
-                self._monitor_dialog._apply_theme()
-            except tk.TclError:
-                # Monitor dialog destroyed during theme switch — UI will pick
-                # up the new theme on next open.
-                pass
-        if self._cutter is not None:
-            try:
-                # Cutter window may have been closed already — winfo_exists
-                # protects against AttributeError on a destroyed widget.
-                if self._cutter.winfo_exists():
-                    self._cutter._apply_theme()
-            except tk.TclError:
-                pass
+
+        # Inform the user. Modal — they have to acknowledge before the
+        # dialog continues, which prevents click-spam on the dropdown.
+        messagebox.showinfo(
+            "Тема сохранена",
+            f"Тема «{value}» будет применена при следующем запуске.\n\n"
+            "Живое переключение временно отключено: на Windows оно "
+            "замораживает окно на 3-15 секунд (известная проблема "
+            "CustomTkinter + Tk при перерисовке палитры). Перезапуск "
+            "применяет тему мгновенно.",
+        )
 
     def _paste_cloud_api_key(self) -> None:
         """Same paste-from-clipboard helper as the HF token, scoped to
