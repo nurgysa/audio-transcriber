@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import threading
+import tkinter as tk
 import webbrowser
 from collections import deque
 from datetime import datetime, timedelta
@@ -591,7 +592,8 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 if c is not None:
                     try:
                         c.close()
-                    except Exception:
+                    except OSError:
+                        # Best-effort socket cleanup — pool may already be torn down.
                         pass
                     if c in self._active_clients:
                         self._active_clients.remove(c)
@@ -672,7 +674,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # Persist any pending form edits before tearing down.
         try:
             self._persist_current_task()
-        except Exception:
+        except OSError:
             import logging
             logging.getLogger(__name__).exception("persist on close failed")
         self._cancel_event.set()
@@ -682,11 +684,13 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         for c in list(self._active_clients):
             try:
                 c.close()
-            except Exception:
+            except OSError:
+                # Best-effort socket cleanup during dialog teardown.
                 pass
         try:
             self.grab_release()
-        except Exception:
+        except tk.TclError:
+            # Toplevel already destroyed (e.g. window closed via X) — no grab to release.
             pass
         self.destroy()
 
@@ -788,7 +792,8 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         ):
             try:
                 w.configure(state=state)
-            except Exception:
+            except tk.TclError:
+                # Widget destroyed mid-busy-toggle — UI already going away.
                 pass
 
     # ── Editor handlers ──────────────────────────────────────────
@@ -879,7 +884,8 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         if self._selected_index is not None and self._selected_index < len(rows):
             try:
                 self._task_rows[self._selected_index].set_selected_visual(False)
-            except Exception:
+            except tk.TclError:
+                # Row widget destroyed (rerender during selection switch).
                 pass
 
         self._selected_index = new_index
@@ -1008,7 +1014,9 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         if self._selected_index < len(getattr(self, "_task_rows", [])):
             try:
                 self._task_rows[self._selected_index].refresh_from_task()
-            except Exception:
+            except tk.TclError:
+                # Row widget destroyed mid-refresh — title/summary updates lost
+                # but next render rebuilds from self._tasks.
                 pass
         self._save_tasks_to_disk()
 
@@ -1044,7 +1052,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             try:
                 from tasks.persistence import save_tasks
                 save_tasks(self._history_folder, self._tasks, self._meta)
-            except Exception:
+            except OSError:
                 import logging
                 logging.getLogger(__name__).exception("auto-save tasks.json failed")
         # Refresh Send/Retry button labels regardless of disk-save outcome
@@ -1106,7 +1114,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # Flush any pending form edits into the in-memory task before sending.
         try:
             self._persist_current_task()
-        except Exception:
+        except OSError:
             import logging
             logging.getLogger(__name__).exception("persist before send failed")
 
@@ -1152,7 +1160,8 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         finally:
             try:
                 linear.close()
-            except Exception:
+            except OSError:
+                # Best-effort socket cleanup after send finishes/fails.
                 pass
             if linear in self._active_clients:
                 self._active_clients.remove(linear)
@@ -1171,7 +1180,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             try:
                 from tasks.persistence import save_tasks
                 save_tasks(self._history_folder, self._tasks, self._meta)
-            except Exception:
+            except OSError:
                 import logging
                 logging.getLogger(__name__).exception(
                     "save_tasks during send failed",
@@ -1240,7 +1249,10 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             return
         try:
             loaded = load_tasks(self._history_folder)
-        except Exception:
+        except (OSError, ValueError, KeyError):
+            # OSError = file I/O; ValueError = JSON decode; KeyError = schema
+            # mismatch (older format, hand-edited file). All recoverable —
+            # treat as "no existing session" and let the user re-extract.
             import logging
             logging.getLogger(__name__).exception("could not load existing tasks.json")
             return
