@@ -39,7 +39,6 @@ from ui.widgets import (
     tonal_button,
 )
 from utils import (
-    check_ffmpeg,
     create_history_entry,
     get_output_path,
     load_config,
@@ -48,58 +47,21 @@ from utils import (
     validate_audio,
 )
 
+# Submodule re-exports. ``main`` lives in ``.main_entry`` so the repo-root
+# ``app.py`` (the faulthandler bootstrap) keeps working through its existing
+# ``from ui.app import main``. ``main_entry`` imports ``App`` lazily inside
+# ``main()``, so this top-level import is safe — no circular load.
+from .constants import (
+    APPEARANCE_MODES,
+    DEVICES,
+    LANGUAGES,
+    MODELS,
+    SPEAKER_COUNTS,
+)
+from .main_entry import main as main
+
 init_logging()
 logger = get_logger(__name__)
-
-LANGUAGES = {
-    "Авто-определение": None,
-    "Казахский": "kk",
-    "Русский": "ru",
-    "English": "en",
-}
-
-MODELS = {
-    "small (быстрый)": "small",
-    "medium (точный)": "medium",
-    "large-v3 (максимум)": "large-v3",
-}
-
-# Speaker-count hint passed to pyannote diarization. Each value maps to one
-# of three tuples: (num_speakers, min_speakers, max_speakers). A known exact
-# count improves diarization error rate ~2× over pyannote's auto-detection.
-# "5+" uses min_speakers so 6/7-way calls still work without a hard cap.
-SPEAKER_COUNTS: dict[str, tuple[int | None, int | None, int | None]] = {
-    "Авто": (None, None, None),
-    "2": (2, None, None),
-    "3": (3, None, None),
-    "4": (4, None, None),
-    "5+": (None, 5, None),
-}
-
-# Compute device choices.
-#   "Авто"        — pick GPU when available, otherwise CPU. Silent fallback;
-#                   right default for users who don't know what hardware
-#                   they have.
-#   "GPU (NVIDIA)" — explicit cuda. Hard-fails if no NVIDIA GPU found —
-#                   we don't silently demote to CPU because the user picked
-#                   GPU on purpose, and a 5-10× slower run with no warning
-#                   would be confusing.
-#   "CPU"         — explicit cpu. Always works. Slow on diarization
-#                   (~10-20× slower than GPU); a warning label appears
-#                   under the diarization device picker when this is chosen.
-DEVICES: dict[str, str] = {
-    "Авто": "auto",
-    "GPU (NVIDIA)": "cuda",
-    "CPU": "cpu",
-}
-
-# Visible label → CustomTkinter appearance_mode value.
-# "system" follows the Windows light/dark setting; the other two are explicit.
-APPEARANCE_MODES: dict[str, str] = {
-    "Системная": "system",
-    "Светлая": "light",
-    "Тёмная": "dark",
-}
 
 
 class App(ctk.CTk):
@@ -1244,34 +1206,3 @@ class App(ctk.CTk):
                 text="Скопировано в буфер обмена", text_color=TEXT_SECONDARY,
             )
 
-
-def main():
-    try:
-        if not check_ffmpeg():
-            import tkinter as tk
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror(
-                "FFmpeg не найден",
-                "Для работы приложения необходим FFmpeg.\n\n"
-                "Установите его:\n"
-                "1. Скачайте с https://ffmpeg.org/download.html\n"
-                "2. Добавьте папку bin в переменную PATH\n"
-                "3. Перезапустите приложение",
-            )
-            root.destroy()
-            return
-
-        app = App()
-        app.mainloop()
-    except Exception as e:
-        logger.exception("fatal error in main()")
-        try:
-            import tkinter as tk
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror("Ошибка запуска", str(e))
-            root.destroy()
-        except Exception:
-            print(f"Ошибка: {e}")
-            input("Нажмите Enter для выхода...")
