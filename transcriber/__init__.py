@@ -26,7 +26,7 @@ from logging_setup import crash_log_path, get_logger
 from transcript_format import format_diarized, format_timed
 
 from .progress import _parse_progress_line
-from .prompt import _build_initial_prompt
+from .prompt import _build_initial_prompt, _effective_whisper_language
 from .speaker_aligner import (
     _assign_speakers_word_level,
     _find_speaker_by_overlap,
@@ -63,6 +63,7 @@ __all__ = [
     "_build_initial_prompt",
     "_check_cancelled",
     "_cuda_is_available",
+    "_effective_whisper_language",
     "_find_speaker_by_overlap",
     "_flush_word_group",
     "_parse_progress_line",
@@ -622,6 +623,11 @@ class Transcriber:
             )
 
         hotwords_str = hotwords.strip() if hotwords and hotwords.strip() else None
+        # Translate the UI-level sentinel for the Whisper API. "mixed" means
+        # «KZ+RU+EN decode» for our layer but Whisper only accepts ISO codes
+        # or None (auto-detect). Keep the original `language` for the prompt-
+        # frame lookup below so the trilingual initial_prompt is still built.
+        effective_language = _effective_whisper_language(language)
         # initial_prompt works through Whisper's decode context (stylistic
         # framing + proper-noun spelling), while hotwords= biases the
         # CTC-style token scoring. Using both in tandem gives the most
@@ -744,7 +750,7 @@ class Transcriber:
                 #   branching would just add flakiness.
                 segments, _info = self._model.transcribe(
                     chunk_path,
-                    language=language,
+                    language=effective_language,
                     beam_size=self._beam_size,
                     vad_filter=True,
                     vad_parameters=dict(

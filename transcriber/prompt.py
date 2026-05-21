@@ -83,3 +83,20 @@ def _build_initial_prompt(
     if cut > 0:
         return head[:cut] + "."
     return head
+
+
+def _effective_whisper_language(language: str | None) -> str | None:
+    """Translate UI-level sentinel to the value faster-whisper expects.
+
+    The codebase uses the string ``"mixed"`` to mark «multilingual KZ+RU+EN
+    decoding» — that's a sentinel for OUR layer (it drives prompt-frame
+    selection in `_build_initial_prompt`). Faster-whisper's
+    `model.transcribe(language=...)` understands only:
+      - a real ISO code ("ru", "kk", "en", …), or
+      - None (= auto-detect dominant language across the file).
+    So for "mixed", we pass None to Whisper, while `_build_initial_prompt`
+    keeps the "mixed" key for its dict-lookup.
+    """
+    if language == "mixed":
+        return None
+    return language
