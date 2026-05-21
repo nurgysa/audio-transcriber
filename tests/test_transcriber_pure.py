@@ -13,7 +13,7 @@ from transcriber import (
     _assign_speakers_word_level,
     _build_initial_prompt,
     _check_cancelled,
-    _effective_whisper_language,  # NEW: A.3
+    _effective_whisper_language,
     _find_speaker_by_overlap,
     _parse_progress_line,
     _speaker_at_time,
