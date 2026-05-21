@@ -42,12 +42,15 @@ from ui.widgets import label, primary_button, tonal_button
 from utils import save_config
 
 from .constants import (
+    _BOARDS_CACHE_KEY,
+    _CONTAINER_CACHE_TTL,
+    _CONTAINER_LABEL_BY_BACKEND,
     _COST_PER_1M_INPUT_TOKENS_USD,
     _CURATED_MODELS,
+    _MODEL_PRICING_USD_PER_M,
     _RECENT_MODELS_KEY,
     _RECENT_MODELS_LIMIT,
     _TEAMS_CACHE_KEY,
-    _TEAMS_CACHE_TTL,
 )
 from .task_row import _TaskRow
 
@@ -74,8 +77,14 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # Worker-thread plumbing: cancel_event flips on close;
         # active_client is the in-flight client we close to interrupt sockets.
         self._cancel_event = threading.Event()
-        self._active_clients: list = []   # OpenRouter + Linear clients in flight
-        self._teams: list[dict] = []      # populated by bootstrap
+        self._active_clients: list = []   # OpenRouter + backend clients in flight
+        self._containers: list = []       # list[Container] from backend.bootstrap()
+
+        # Phase 6.4.1: backend selection. Initial value picks the first
+        # enabled backend (per Settings checkboxes). If the loaded
+        # tasks.json has a backend recorded, prefer that to keep the
+        # editor consistent with what's already on disk.
+        self._enabled_backends: list[str] = self._compute_enabled_backends()
 
         # Editor state. _tasks is the canonical in-memory list; right form
         # binds to _tasks[_selected_index]. _meta carries extract context for
@@ -93,7 +102,14 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._try_load_existing_tasks()
 
         self.title("Извлечение задач")
-        self.geometry("640x520")
+        # 1100x720 — comfortable for the master-detail editor (Phase 6.2):
+        # left list ≥260px, right form ≥520px, both with breathing room.
+        # Spec called for ~960×680 but real-world usage with longer Russian
+        # task titles benefits from wider rows. minsize prevents the layout
+        # from collapsing if user resizes too aggressively (form fields
+        # become unreadable below ~720 wide).
+        self.geometry("1100x720")
+        self.minsize(820, 560)
         self.configure(fg_color=BG)
         self.transient(parent)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -101,16 +117,50 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
         self._build_ui()
 
-        # Bind undo (both lower and upper case — tkinter distinguishes them).
+        # ── Keyboard shortcuts (Phase 6.5 C) ──
+        # tkinter case-quirk: <Control-z> ловит lat-raskladka без CapsLock,
+        # <Control-Z> нужен с CapsLock-ON или Shift'ом — биндим обе формы.
         self.bind("<Control-z>", self._undo)
         self.bind("<Control-Z>", self._undo)
+        # Esc — закрыть диалог (через _on_close → cancel_event + grab_release)
+        self.bind("<Escape>", lambda _e: self._on_close())
+        # F5 — обновить teams/boards (мнемоника как в Files Explorer)
+        self.bind("<F5>", lambda _e: self._refresh_containers())
+        # Ctrl+N — + Добавить новую пустую задачу
+        self.bind("<Control-n>", lambda _e: self._on_add_task())
+        self.bind("<Control-N>", lambda _e: self._on_add_task())
+        # Ctrl+Shift+E — Извлечь из транскрипта (если кнопка активна)
+        self.bind("<Control-Shift-E>", self._kbd_extract)
+        self.bind("<Control-Shift-e>", self._kbd_extract)
+        # Ctrl+Shift+S — Отправить выбранные (Send mnemonic)
+        self.bind("<Control-Shift-S>", self._kbd_send)
+        self.bind("<Control-Shift-s>", self._kbd_send)
 
         # If we loaded existing tasks above, render them now that widgets exist.
         if self._tasks:
             self._render_task_list()
             self._set_selection(0)
 
-        self._load_teams_async()
+        self._load_containers_async()
+
+        # Ctrl+Enter в Söyle textbox → autofill (widget-scoped, чтобы
+        # обычный Enter мог делать перенос строки, а Ctrl+Enter — submit).
+        self._textbox_autofill_hint.bind(
+            "<Control-Return>", lambda _e: (self._on_autofill_clicked(), "break")[1],
+        )
+
+    def _compute_enabled_backends(self) -> list[str]:
+        """Read Settings checkboxes (Phase 6.4) → list of enabled names.
+
+        Order is significant: first enabled is the default selection.
+        Falls back to ["linear"] if both flags are missing/false (back-
+        compat with pre-6.4 configs that have no flags written yet)."""
+        enabled = []
+        if bool(self._config.get("linear_enabled", True)):
+            enabled.append("linear")
+        if bool(self._config.get("glide_enabled", True)):
+            enabled.append("glide")
+        return enabled or ["linear"]
 
     # ── UI construction ──────────────────────────────────────────
 
@@ -118,11 +168,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)   # editor row stretches
 
-        # --- Header row: model + team + refresh + extract ---
+        # --- Header row: model + backend + container + refresh + extract ---
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.grid(row=0, column=0, padx=16, pady=(14, 6), sticky="ew")
-        header.grid_columnconfigure(1, weight=1)
-        header.grid_columnconfigure(3, weight=1)
+        header.grid_columnconfigure(1, weight=1)   # model
+        header.grid_columnconfigure(5, weight=1)   # container
 
         label(header, "Модель").grid(row=0, column=0, padx=(0, 6), sticky="w")
         default_model = self._config.get(
@@ -137,33 +187,57 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # CTkComboBox lets the user type custom slugs that aren't in the list.
         self._model_combo = ctk.CTkComboBox(
             header, variable=self._model_var, values=all_models,
-            width=280, height=32,
+            width=240, height=32,
             font=ctk.CTkFont(family=FONT, size=12),
             border_color=BORDER, button_color=BORDER,
             fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
         )
         self._model_combo.grid(row=0, column=1, padx=(0, 12), sticky="ew")
 
-        label(header, "Команда").grid(row=0, column=2, padx=(0, 6), sticky="w")
+        # Phase 6.4.1: backend selection. Values come from Settings flags;
+        # changing it triggers re-fetch of containers.
+        label(header, "Backend").grid(row=0, column=2, padx=(0, 6), sticky="w")
+        backend_display = [
+            "Linear" if n == "linear" else "Glide"
+            for n in self._enabled_backends
+        ]
+        self._backend_var = ctk.StringVar(
+            value=backend_display[0] if backend_display else "Linear",
+        )
+        self._backend_menu = ctk.CTkComboBox(
+            header, variable=self._backend_var, values=backend_display or ["Linear"],
+            width=110, height=32, state="readonly",
+            font=ctk.CTkFont(family=FONT, size=12),
+            border_color=BORDER, button_color=BORDER,
+            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
+            command=self._on_backend_changed,
+        )
+        self._backend_menu.grid(row=0, column=3, padx=(0, 12), sticky="w")
+
+        # Container dropdown — label changes per backend (Команда / Доска).
+        self._container_label = label(
+            header, _CONTAINER_LABEL_BY_BACKEND.get(self._current_backend_name(), "Команда"),
+        )
+        self._container_label.grid(row=0, column=4, padx=(0, 6), sticky="w")
         self._team_var = ctk.StringVar(value="(загрузка...)")
         self._team_menu = ctk.CTkComboBox(
             header, variable=self._team_var, values=["(загрузка...)"],
-            width=200, height=32, state="readonly",
+            width=180, height=32, state="readonly",
             font=ctk.CTkFont(family=FONT, size=12),
             border_color=BORDER, button_color=BORDER,
             fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
         )
-        self._team_menu.grid(row=0, column=3, padx=(0, 4), sticky="ew")
+        self._team_menu.grid(row=0, column=5, padx=(0, 4), sticky="ew")
 
         self._btn_refresh = tonal_button(
-            header, text="↻", command=self._refresh_teams, width=36,
+            header, text="↻", command=self._refresh_containers, width=36,
         )
-        self._btn_refresh.grid(row=0, column=4, padx=(0, 8))
+        self._btn_refresh.grid(row=0, column=6, padx=(0, 8))
 
         self._btn_extract = primary_button(
             header, text="Извлечь", command=self._on_extract, width=120,
         )
-        self._btn_extract.grid(row=0, column=5)
+        self._btn_extract.grid(row=0, column=7)
 
         # --- Status / cost hint row ---
         self._status_label = label(self, "", anchor="w")
@@ -246,8 +320,23 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         ).grid(row=0, column=3, sticky="e")
 
     def _update_cost_hint(self) -> None:
-        """Heuristic: ~chars/4 input tokens × Sonnet pricing × 1.3 (output)."""
+        """Initial status: cost-of-extract heuristic if a transcript is
+        present, otherwise a welcome that points to the manual paths.
+
+        Phase 6.5 D — adaptive welcome. When the dialog is opened with
+        no transcript (e.g., user wants to add tasks by hand or via
+        Söyle dictation), the old «Стоимость ≈ $0.00 (≈ 1 токенов)»
+        line was both wrong and confusing. Now we show a one-liner
+        that mirrors the empty-state placeholder in the left pane.
+        """
         chars = len(self._transcript or "")
+        if chars < 50:
+            # No transcript → manual-only flow; skip the cost line.
+            self._status_label.configure(
+                text="Готов к работе. Извлеките из транскрипта или добавьте задачу вручную.",
+                text_color=TEXT_SECONDARY,
+            )
+            return
         approx_tokens = max(chars // 4, 1)
         cost = approx_tokens / 1_000_000 * _COST_PER_1M_INPUT_TOKENS_USD * 1.3
         self._status_label.configure(
@@ -255,90 +344,147 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             text_color=TEXT_SECONDARY,
         )
 
-    # ── Team bootstrap (cached 24h) ──────────────────────────────
+    # ── Backend / container bootstrap (cached 24h per backend) ──────
 
-    def _load_teams_async(self) -> None:
-        """Use cache if fresh; else fetch from Linear in a worker."""
-        cache = self._config.get(_TEAMS_CACHE_KEY) or {}
+    def _current_backend_name(self) -> str:
+        """Map dropdown display value → internal backend name.
+
+        Returns "linear" or "glide". Defaults to first enabled if the
+        UI hasn't been built yet (called from _build_ui pre-init)."""
+        var = getattr(self, "_backend_var", None)
+        display = var.get() if var is not None else None
+        if display == "Glide":
+            return "glide"
+        if display == "Linear":
+            return "linear"
+        # Pre-build / unknown — first enabled.
+        return self._enabled_backends[0] if self._enabled_backends else "linear"
+
+    def _backend_cache_key(self) -> str:
+        return _BOARDS_CACHE_KEY if self._current_backend_name() == "glide" else _TEAMS_CACHE_KEY
+
+    def _on_backend_changed(self, _value: str = "") -> None:
+        """User picked a different backend in the dropdown.
+
+        Swap the container-label (Команда / Доска) and re-fetch the
+        container list for the new backend. Clear the editor — task list
+        from a Linear extract isn't meaningful in a Glide context."""
+        self._container_label.configure(
+            text=_CONTAINER_LABEL_BY_BACKEND.get(self._current_backend_name(), "Команда"),
+        )
+        self._team_var.set("(загрузка...)")
+        self._team_menu.configure(values=["(загрузка...)"])
+        self._load_containers_async()
+
+    def _load_containers_async(self) -> None:
+        """Use cache if fresh; else fetch from the selected backend in a worker."""
+        cache_key = self._backend_cache_key()
+        cache = self._config.get(cache_key) or {}
         fetched_at = cache.get("fetched_at")
         if fetched_at:
             try:
                 age = datetime.now() - datetime.fromisoformat(fetched_at)
             except ValueError:
-                age = _TEAMS_CACHE_TTL + timedelta(seconds=1)
-            if age <= _TEAMS_CACHE_TTL and cache.get("data"):
-                self._teams = list(cache["data"])
-                self._populate_team_dropdown()
+                age = _CONTAINER_CACHE_TTL + timedelta(seconds=1)
+            if age <= _CONTAINER_CACHE_TTL and cache.get("data"):
+                # Cache stores plain dicts; rebuild Container objects.
+                from tasks.backends.base import Container
+                self._containers = [
+                    Container(id=d["id"], name=d.get("name", "?"), key=d.get("key"))
+                    for d in cache["data"]
+                ]
+                self._populate_container_dropdown()
                 return
 
-        self._fetch_teams_in_worker()
+        self._fetch_containers_in_worker()
 
-    def _refresh_teams(self) -> None:
+    def _refresh_containers(self) -> None:
         """[↻] forces a fetch regardless of cache age."""
         self._team_var.set("(обновление...)")
         self._team_menu.configure(values=["(обновление...)"])
-        self._fetch_teams_in_worker()
+        self._fetch_containers_in_worker()
 
-    def _fetch_teams_in_worker(self) -> None:
-        api_key = (self._config.get("linear_api_key") or "").strip()
+    def _fetch_containers_in_worker(self) -> None:
+        from tasks.backends import backend_from_name
+
+        backend_name = self._current_backend_name()
+        api_key_field = "linear_api_key" if backend_name == "linear" else "glide_api_key"
+        api_key = (self._config.get(api_key_field) or "").strip()
         if not api_key:
-            self._team_var.set("(нет ключа Linear)")
+            self._team_var.set(f"(нет ключа {backend_name.title()})")
             return
 
         def worker():
+            backend = None
             try:
-                from tasks.linear_client import LinearClient
-                client = LinearClient(api_key)
-                self._active_clients.append(client)
+                backend = backend_from_name(backend_name, self._config)
+                self._active_clients.append(backend)
                 try:
-                    result = client.bootstrap()
+                    containers = backend.bootstrap()
                 finally:
-                    self._active_clients.remove(client)
-                    client.close()
+                    self._active_clients.remove(backend)
+                    backend.close()
             except Exception as e:
                 if self._cancel_event.is_set():
-                    return  # dialog already closing; ignore
-                self.after(0, self._on_teams_error, str(e))
+                    return
+                self.after(0, self._on_containers_error, str(e))
                 return
 
             if self._cancel_event.is_set():
                 return
-            teams = result.get("teams", [])
-            self._config[_TEAMS_CACHE_KEY] = {
-                "data": teams,
+            # Cache as plain dicts for JSON-safety.
+            self._config[self._backend_cache_key()] = {
+                "data": [
+                    {"id": c.id, "name": c.name, "key": c.key}
+                    for c in containers
+                ],
                 "fetched_at": datetime.now().isoformat(timespec="seconds"),
             }
             save_config(self._config)
-            self.after(0, self._on_teams_loaded, teams)
+            self.after(0, self._on_containers_loaded, containers)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_teams_loaded(self, teams: list[dict]) -> None:
-        self._teams = teams
-        self._populate_team_dropdown()
+    def _on_containers_loaded(self, containers: list) -> None:
+        self._containers = containers
+        self._populate_container_dropdown()
 
-    def _on_teams_error(self, msg: str) -> None:
+    def _on_containers_error(self, msg: str) -> None:
+        from tasks.errors import humanize
         self._team_var.set("(ошибка)")
         self._team_menu.configure(values=["(ошибка)"])
-        self._status_label.configure(text=f"✗ {msg}", text_color=RED)
+        self._status_label.configure(
+            text=f"✗ {humanize(msg)}", text_color=RED,
+        )
 
-    def _populate_team_dropdown(self) -> None:
-        if not self._teams:
-            self._team_var.set("(нет команд)")
-            self._team_menu.configure(values=["(нет команд)"])
+    def _populate_container_dropdown(self) -> None:
+        if not self._containers:
+            empty_label = (
+                "(нет досок)"
+                if self._current_backend_name() == "glide"
+                else "(нет команд)"
+            )
+            self._team_var.set(empty_label)
+            self._team_menu.configure(values=[empty_label])
             return
-        labels = [f"{t['name']} ({t['key']})" for t in self._teams]
+        # Backend-specific label format. Linear: "Engineering (ENG)"; Glide: "Inbox".
+        labels = [
+            f"{c.name} ({c.key})" if c.key else c.name
+            for c in self._containers
+        ]
         self._team_menu.configure(values=labels)
         self._team_var.set(labels[0])
 
     # ── Извлечение ───────────────────────────────────────────────
 
     def _on_extract(self) -> None:
-        team = self._selected_team()
-        if not team:
+        container = self._selected_container()
+        if not container:
+            backend_name = self._current_backend_name()
+            label_word = "доску" if backend_name == "glide" else "команду"
             messagebox.showwarning(
-                "Нет команды",
-                "Выберите команду или нажмите [↻] для загрузки списка.",
+                "Нет контейнера",
+                f"Выберите {label_word} или нажмите [↻] для загрузки списка.",
             )
             return
 
@@ -348,9 +494,17 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             return
 
         self._set_busy(True)
-        self._status_label.configure(
-            text="Запрос к Linear (team_context)...", text_color=TEXT_SECONDARY,
-        )
+        backend_name = self._current_backend_name()
+        # Status text mentions which backend we're talking to so the user
+        # knows whether a slow first-call is going to Linear or Glide.
+        if backend_name == "linear":
+            self._status_label.configure(
+                text="Запрос к Linear (team_context)...", text_color=TEXT_SECONDARY,
+            )
+        else:
+            self._status_label.configure(
+                text="Запрос к Glide...", text_color=TEXT_SECONDARY,
+            )
         # Clear the editor; will be re-populated by _on_extract_success.
         self._tasks = []
         self._selected_index = None
@@ -360,31 +514,42 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
         threading.Thread(
             target=self._run_extraction,
-            args=(team, model),
+            args=(container, model, backend_name),
             daemon=True,
         ).start()
 
-    def _selected_team(self) -> dict | None:
+    def _selected_container(self):
+        """Return the Container the user selected in the dropdown, or None."""
         label_value = self._team_var.get()
-        for t in self._teams:
-            if f"{t['name']} ({t['key']})" == label_value:
-                return t
+        for c in self._containers:
+            display = f"{c.name} ({c.key})" if c.key else c.name
+            if display == label_value:
+                return c
         return None
 
-    def _run_extraction(self, team: dict, model: str) -> None:
+    def _run_extraction(self, container, model: str, backend_name: str) -> None:
+        from tasks.backends import backend_from_name
         from tasks.extractor import ExtractionError, extract
-        from tasks.linear_client import LinearClient, LinearError
+        from tasks.glide_client import GlideError
+        from tasks.linear_client import LinearError
         from tasks.openrouter_client import OpenRouterClient, OpenRouterError
         from tasks.persistence import save_tasks_raw
 
-        linear = openrouter = None
+        backend = openrouter = None
         try:
-            linear     = LinearClient(self._config["linear_api_key"])
+            backend    = backend_from_name(backend_name, self._config)
             openrouter = OpenRouterClient(self._config["openrouter_api_key"])
-            self._active_clients.extend([linear, openrouter])
+            self._active_clients.extend([backend, openrouter])
 
             if self._cancel_event.is_set():
                 return
+
+            # Phase 6.4.1: Glide backend returns empty members/labels (no
+            # LLM grounding). Linear continues to fetch members + labels
+            # for prompt context.
+            ctx = backend.context(container.id)
+            members = ctx.get("members") or []
+            labels  = ctx.get("labels")  or []
 
             if not self._cancel_event.is_set():
                 self.after(0, self._status_label.configure, {
@@ -394,21 +559,26 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
             result = extract(
                 transcript=self._transcript,
-                team_id=team["id"],
                 model=model,
                 lang=self._transcript_lang,
-                linear_client=linear,
                 openrouter_client=openrouter,
+                members=members,
+                labels=labels,
             )
 
             if self._cancel_event.is_set():
                 return
 
+            # Phase 6.4.1: meta carries `backend` discriminator so re-open
+            # of an existing tasks.json knows which backend originally fed
+            # the editor. Old files without `backend` fall back to "linear"
+            # in callers that need to dispatch.
             meta = {
                 "extracted_at": datetime.now().isoformat(timespec="seconds"),
                 "model": result["model"],
-                "team_id": team["id"],
-                "team_name": team["name"],
+                "backend": backend_name,
+                "team_id": container.id,        # legacy field name; holds container id
+                "team_name": container.name,
                 "transcript_lang": self._transcript_lang or "auto",
             }
             save_tasks_raw(self._history_folder, result["tasks"], meta)
@@ -419,13 +589,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 self.after(0, self._on_extract_success, result, meta)
 
         except ExtractionError as e:
-            # ExtractionError carries `raw_response` when extract() got a
-            # successful network round-trip but the payload was unusable.
             if not self._cancel_event.is_set():
                 self.after(
                     0, self._on_extract_error, str(e), e.raw_response,
                 )
-        except (OpenRouterError, LinearError) as e:
+        except (OpenRouterError, LinearError, GlideError) as e:
             if not self._cancel_event.is_set():
                 self.after(0, self._on_extract_error, str(e), None)
         except Exception as e:
@@ -434,7 +602,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             if not self._cancel_event.is_set():
                 self.after(0, self._on_extract_error, f"{type(e).__name__}: {e}", None)
         finally:
-            for c in (linear, openrouter):
+            for c in (backend, openrouter):
                 if c is not None:
                     try:
                         c.close()
@@ -443,8 +611,6 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                         pass
                     if c in self._active_clients:
                         self._active_clients.remove(c)
-            # Guard the final UI update — if the user closed the dialog mid-run
-            # the toplevel is destroyed and self.after would raise TclError.
             if not self._cancel_event.is_set():
                 self.after(0, self._set_busy, False)
 
@@ -453,16 +619,19 @@ class ExtractTasksDialog(ctk.CTkToplevel):
     def _on_extract_success(self, result: dict, meta: dict) -> None:
         n = len(result["tasks"])
         corr = result["corrections"]
+        # Phase 6.5 B — real LLM cost display from response.usage.
+        # Replaces the upfront «Стоимость ≈ $X.XX» heuristic with the
+        # authoritative number for THIS extract.
+        usage = result.get("usage") or {}
+        used_model = result.get("model") or ""
+        cost_str = self._format_real_cost(usage, used_model)
+
+        parts = [f"✓ Извлечено {n} задач"]
         if corr:
-            self._status_label.configure(
-                text=f"✓ Извлечено {n} задач ({corr} полей скорректированы)",
-                text_color=GREEN,
-            )
-        else:
-            self._status_label.configure(
-                text=f"✓ Извлечено {n} задач",
-                text_color=GREEN,
-            )
+            parts.append(f"({corr} полей скорректированы)")
+        if cost_str:
+            parts.append(f"·  {cost_str}")
+        self._status_label.configure(text="  ".join(parts), text_color=GREEN)
 
         # Promote in-memory tasks to dialog state for the editor.
         self._tasks = list(result["tasks"])
@@ -482,8 +651,50 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             text=f"Сохранено: {rel}", text_color=TEXT_SECONDARY,
         )
 
+    def _format_real_cost(self, usage: dict, model: str) -> str:
+        """Build a "X tokens · $0.0123" string from response.usage.
+
+        Returns "" if usage is empty (defensive — all callers should
+        already guard, but defensive helps composability).
+
+        Cost source priority:
+          1. usage["cost"] if OpenRouter included it (authoritative).
+          2. computed: prompt × in_rate + completion × out_rate, where
+             rates come from _MODEL_PRICING_USD_PER_M for the actual
+             model that served the request.
+          3. token count only — for unknown models we still show
+             throughput so the user knows extraction did something.
+
+        Format examples:
+            "1,234↑ + 567↓ т.  ·  $0.0234"      (full, known model)
+            "1,234↑ + 567↓ т."                    (unknown model)
+        """
+        if not usage:
+            return ""
+        prompt = int(usage.get("prompt_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or 0)
+        if prompt == 0 and completion == 0:
+            return ""
+
+        cost: float | None = None
+        if "cost" in usage and isinstance(usage.get("cost"), (int, float)):
+            cost = float(usage["cost"])
+        else:
+            rates = _MODEL_PRICING_USD_PER_M.get(model)
+            if rates is not None:
+                in_rate, out_rate = rates
+                cost = (prompt * in_rate + completion * out_rate) / 1_000_000.0
+
+        # Compose. Russian commas via .format spec; locale-agnostic comma
+        # (1,234) is intentional — easier to read than 1234.
+        toks_part = f"{prompt:,}↑ + {completion:,}↓ т."
+        if cost is None:
+            return toks_part
+        return f"{toks_part}  ·  ${cost:.4f}"
+
     def _on_extract_error(self, msg: str, raw_response: str | None) -> None:
-        self._status_label.configure(text=f"✗ {msg}", text_color=RED)
+        from tasks.errors import humanize
+        self._status_label.configure(text=f"✗ {humanize(msg)}", text_color=RED)
         if raw_response:
             import logging
             logging.getLogger(__name__).warning(
@@ -491,12 +702,42 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 raw_response[:2000],
             )
 
+    # ── Keyboard shortcut handlers (Phase 6.5 C) ──────────────────
+
+    def _kbd_extract(self, _event=None) -> str:
+        """Ctrl+Shift+E → trigger Извлечь if the button is currently
+        enabled. Returns 'break' so the default Tk bindings don't also
+        fire (e.g., a focused textbox would get a literal 'E')."""
+        try:
+            state = str(self._btn_extract.cget("state"))
+        except Exception:
+            state = "disabled"
+        if state == "normal":
+            self._on_extract()
+        return "break"
+
+    def _kbd_send(self, _event=None) -> str:
+        """Ctrl+Shift+S → trigger Отправить выбранные if enabled."""
+        try:
+            state = str(self._btn_send.cget("state"))
+        except Exception:
+            state = "disabled"
+        if state == "normal":
+            self._on_send_clicked()
+        return "break"
+
     def _set_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
         for btn in (self._btn_extract, self._btn_refresh,
                     self._btn_add, self._btn_select_all,
                     self._btn_select_none, self._btn_delete):
             btn.configure(state=state)
+        # Autofill button (Phase 6.5) — disabled while busy, but doesn't
+        # follow _set_editor_buttons_state because it's valid even when
+        # no task is selected (auto-creates a fresh one).
+        autofill_btn = getattr(self, "_btn_autofill", None)
+        if autofill_btn is not None:
+            autofill_btn.configure(state=state)
         # Send/Retry are only force-disabled while busy; their re-enable
         # state comes from _refresh_send_button_label (pending/failed counts).
         if busy:
@@ -553,7 +794,30 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._var_assignee    = ctk.StringVar(value="(нет)")
         self._var_due_date    = ctk.StringVar()
 
-        row = 0
+        # ── Autofill-from-text section (Phase 6.5, Söyle-friendly) ──
+        # User dictates a free-form description (via Söyle or by typing)
+        # into this textbox; clicking the button below runs the text
+        # through the LLM (extract_one_task) and overwrites the form
+        # fields. Sits at the TOP of the form so it's the first thing
+        # the user sees when they click + Добавить on a fresh task.
+        label(f, "Подсказка для AI (можно надиктовать через Söyle)").grid(
+            row=0, column=0, padx=12, pady=(12, 2), sticky="w",
+        )
+        self._textbox_autofill_hint = ctk.CTkTextbox(
+            f, wrap="word", height=64,
+            font=ctk.CTkFont(family=FONT, size=12),
+            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
+        )
+        self._textbox_autofill_hint.grid(
+            row=1, column=0, padx=12, pady=(0, 6), sticky="ew",
+        )
+        self._btn_autofill = tonal_button(
+            f, text="Заполнить из текста",
+            command=self._on_autofill_clicked, width=200,
+        )
+        self._btn_autofill.grid(row=2, column=0, padx=12, pady=(0, 14), sticky="w")
+
+        row = 3
         label(f, "Заголовок").grid(row=row, column=0, padx=12, pady=(12, 2), sticky="w")
         row += 1
         self._entry_title = ctk.CTkEntry(
@@ -644,8 +908,48 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
     # ── Editor handlers ──────────────────────────────────────────
 
+    def _ensure_meta(self) -> bool:
+        """Populate self._meta from current backend+container selection
+        if it's empty (i.e., user is doing manual-add without a prior
+        extract). Returns True if meta is ready, False if user needs to
+        pick a container first.
+
+        Phase 6.5: closes a gap in 6.4.1 where manual-add path silently
+        relied on an earlier extract having populated _meta. Autofill +
+        Send without an extract used to fail with «потерян контекст команды/доски».
+        """
+        if self._meta:
+            return True
+        container = self._selected_container()
+        if not container:
+            backend_name = self._current_backend_name()
+            label_word = "доску" if backend_name == "glide" else "команду"
+            messagebox.showwarning(
+                "Нет контейнера",
+                f"Выберите {label_word} в шапке диалога перед добавлением задач.",
+            )
+            return False
+        backend_name = self._current_backend_name()
+        self._meta = {
+            "extracted_at": datetime.now().isoformat(timespec="seconds"),
+            "model": self._model_var.get().strip(),
+            "backend": backend_name,
+            "team_id": container.id,           # legacy field name; container id
+            "team_name": container.name,
+            "transcript_lang": self._transcript_lang or "auto",
+        }
+        # Manual-add path doesn't fetch members/labels from the backend
+        # (would need an extra round-trip just for assignee grounding).
+        # Autofill from text still works without grounding — LLM fills
+        # title/description/priority and skips assignee/labels.
+        self._cached_members = []
+        self._cached_labels = []
+        return True
+
     def _on_add_task(self) -> None:
         from tasks.schema import Task
+        if not self._ensure_meta():
+            return
         self._push_undo_snapshot()
         new_task = Task(title="")
         self._tasks.append(new_task)
@@ -688,6 +992,33 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         for child in self._task_list.winfo_children():
             child.destroy()
         self._task_rows: list = []
+
+        # Empty-state placeholder: when there are no tasks, show a hint
+        # pointing the user to the two manual-entry paths (Add button +
+        # Söyle dictation in the right form). Phase 6.5 D — first-time
+        # discoverability fix. Helps users who open the dialog without
+        # a prior extract realize that manual-add IS supported.
+        if not self._tasks:
+            placeholder = ctk.CTkLabel(
+                self._task_list,
+                text=(
+                    "📋  Список задач пуст\n\n"
+                    "• «Извлечь» из транскрипта\n"
+                    "  (Ctrl+Shift+E)\n\n"
+                    "• «+ Добавить» вручную\n"
+                    "  (Ctrl+N)\n\n"
+                    "• Или надиктуйте через Söyle\n"
+                    "  в «Подсказка для AI» справа\n"
+                    "  (Ctrl+Enter в textbox'e)"
+                ),
+                font=ctk.CTkFont(family=FONT, size=12),
+                text_color=TEXT_SECONDARY,
+                justify="left", anchor="w",
+            )
+            placeholder.grid(row=0, column=0, padx=14, pady=14, sticky="nw")
+            self._refresh_send_button_label()
+            return
+
         for task in self._tasks:
             row = _TaskRow(
                 self._task_list, task,
@@ -882,6 +1213,147 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._textbox_description.edit_modified(False)
         self._persist_current_task()
 
+    # ── Autofill from free-form text (Phase 6.5) ────────────────────
+
+    def _on_autofill_clicked(self) -> None:
+        """Read free text from the autofill textbox, run extract_one_task,
+        populate the form fields on success.
+
+        If no task is currently selected, auto-creates an empty one first
+        (mirrors the natural «+ Добавить → надиктовать → заполнить» flow).
+        Push undo snapshot so user can Ctrl+Z to revert if the LLM
+        misinterprets the input."""
+        free_text = self._textbox_autofill_hint.get("1.0", "end").strip()
+        if not free_text:
+            self._status_label.configure(
+                text="Введите текст в поле подсказки",
+                text_color=RED,
+            )
+            return
+
+        api_key = (self._config.get("openrouter_api_key") or "").strip()
+        if not api_key:
+            messagebox.showwarning(
+                "Нет ключа OpenRouter",
+                "Добавьте OpenRouter API ключ в Settings и повторите.",
+            )
+            return
+
+        # Phase 6.5 fix: ensure _meta is populated BEFORE any mutation.
+        # If user opened the dialog without a prior extract and goes
+        # directly to autofill, _meta is empty → send would fail later
+        # with «потерян контекст команды/доски». _ensure_meta builds
+        # synthetic meta from the header backend+container dropdowns.
+        if not self._ensure_meta():
+            return
+
+        # Auto-create a task if none selected (lets user click + Добавить
+        # OR just type into the hint and click — both flows work).
+        if self._selected_index is None or not self._tasks:
+            self._on_add_task()
+
+        self._push_undo_snapshot()
+        self._set_busy(True)
+        self._status_label.configure(
+            text="Заполнение из текста...", text_color=TEXT_SECONDARY,
+        )
+        model = self._model_var.get().strip() or "anthropic/claude-sonnet-4.5"
+        threading.Thread(
+            target=self._run_autofill_worker,
+            args=(free_text, model, api_key),
+            daemon=True,
+        ).start()
+
+    def _run_autofill_worker(
+        self, free_text: str, model: str, api_key: str,
+    ) -> None:
+        """Worker thread: drive extract_one_task. Marshalls success or
+        error back to the main thread via self.after."""
+        from tasks.extractor import ExtractionError, extract_one_task
+        from tasks.openrouter_client import OpenRouterClient, OpenRouterError
+
+        openrouter = None
+        result: object | None = None
+        error_msg: str | None = None
+        try:
+            openrouter = OpenRouterClient(api_key)
+            self._active_clients.append(openrouter)
+            members = list(getattr(self, "_cached_members", []) or [])
+            labels  = list(getattr(self, "_cached_labels",  []) or [])
+            result = extract_one_task(
+                free_text=free_text,
+                members=members, labels=labels,
+                lang=self._transcript_lang,
+                model=model,
+                openrouter_client=openrouter,
+            )
+        except (OpenRouterError, ExtractionError) as e:
+            error_msg = str(e)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception("autofill worker crashed")
+            error_msg = f"{type(e).__name__}: {e}"
+        finally:
+            if openrouter is not None:
+                try:
+                    openrouter.close()
+                except Exception:
+                    pass
+                if openrouter in self._active_clients:
+                    self._active_clients.remove(openrouter)
+
+        if self._cancel_event.is_set():
+            return
+        if error_msg is not None:
+            self.after(0, self._on_autofill_error, error_msg)
+        else:
+            self.after(0, self._on_autofill_success, result)
+
+    def _on_autofill_success(self, task) -> None:
+        """Main-thread callback: write LLM-derived fields into the
+        currently selected task and refresh both the form and the list row."""
+        self._set_busy(False)
+        if task is None:
+            self._status_label.configure(
+                text="✗ LLM не смог распознать задачу из текста — попробуйте перефразировать",
+                text_color=RED,
+            )
+            return
+        if self._selected_index is None or self._selected_index >= len(self._tasks):
+            return
+
+        current = self._tasks[self._selected_index]
+        # Overwrite LLM-extracted fields. local_id / status / send_* /
+        # selected stay as they were on the in-memory task.
+        current.title         = task.title
+        current.description   = task.description
+        current.priority      = task.priority
+        current.assignee_id   = task.assignee_id
+        current.assignee_name = task.assignee_name
+        current.label_ids     = list(task.label_ids)
+        current.label_names   = list(task.label_names)
+        current.due_date      = task.due_date
+
+        # Re-bind form vars to the (now mutated) task — refresh display.
+        self._bind_form_to(current)
+        if self._selected_index < len(getattr(self, "_task_rows", [])):
+            try:
+                self._task_rows[self._selected_index].refresh_from_task()
+            except Exception:
+                pass
+        self._save_tasks_to_disk()
+
+        # Clear the hint textbox so the next dictation starts clean.
+        self._textbox_autofill_hint.delete("1.0", "end")
+        self._status_label.configure(
+            text="✓ Поля заполнены", text_color=GREEN,
+        )
+
+    def _on_autofill_error(self, msg: str) -> None:
+        from tasks.errors import humanize
+        self._set_busy(False)
+        self._status_label.configure(text=f"✗ {humanize(msg)}", text_color=RED)
+
     def _teams_context_members(self) -> list:
         """Return the members list from the most recent team_context fetch.
 
@@ -940,20 +1412,24 @@ class ExtractTasksDialog(ctk.CTkToplevel):
     def _start_send(self, *, retry_failed: bool) -> None:
         """Spin up the send worker. Saves any pending form edits first so
         the in-memory tasks list matches what's on disk before sending."""
-        team_id = self._meta.get("team_id") if self._meta else None
-        if not team_id:
+        container_id = self._meta.get("team_id") if self._meta else None
+        if not container_id:
             messagebox.showwarning(
-                "Нет команды",
-                "Не могу отправить — потерян контекст команды. "
+                "Нет контейнера",
+                "Не могу отправить — потерян контекст команды/доски. "
                 "Перезапустите извлечение.",
             )
             return
 
-        api_key = (self._config.get("linear_api_key") or "").strip()
+        # Phase 6.4.1: backend comes from meta (set at extract time). For
+        # legacy tasks.json (pre-6.4) no `backend` key → assume Linear.
+        backend_name = (self._meta.get("backend") if self._meta else None) or "linear"
+        api_key_field = "linear_api_key" if backend_name == "linear" else "glide_api_key"
+        api_key = (self._config.get(api_key_field) or "").strip()
         if not api_key:
             messagebox.showwarning(
-                "Нет ключа Linear",
-                "Добавьте Linear API ключ в Settings и повторите.",
+                f"Нет ключа {backend_name.title()}",
+                f"Добавьте {backend_name.title()} API ключ в Settings и повторите.",
             )
             return
 
@@ -966,51 +1442,50 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
         self._set_busy(True)
         self._status_label.configure(
-            text="Отправка в Linear...", text_color=TEXT_SECONDARY,
+            text=f"Отправка в {backend_name.title()}...", text_color=TEXT_SECONDARY,
         )
         threading.Thread(
             target=self._run_send_worker,
-            args=(team_id, api_key, retry_failed),
+            args=(container_id, backend_name, retry_failed),
             daemon=True,
         ).start()
 
     def _run_send_worker(
-        self, team_id: str, api_key: str, retry_failed: bool,
+        self, container_id: str, backend_name: str, retry_failed: bool,
     ) -> None:
-        """Worker thread: drive ``send_tasks_iter`` against a fresh LinearClient.
+        """Worker thread: drive ``send_tasks_iter`` against the selected backend.
 
         Status updates flow through ``_on_send_status_change`` (worker thread:
         atomic save_tasks + ``self.after`` for UI). Final completion is
-        marshalled to ``_on_send_finished`` on the main thread.
-        """
-        from tasks.linear_client import LinearClient
+        marshalled to ``_on_send_finished`` on the main thread."""
+        from tasks.backends import backend_from_name
         from tasks.sender import send_tasks_iter
 
-        linear = LinearClient(api_key)
-        self._active_clients.append(linear)
+        backend = backend_from_name(backend_name, self._config)
+        self._active_clients.append(backend)
         error_msg: str | None = None
         try:
             for _ in send_tasks_iter(
                 self._tasks,
-                team_id=team_id,
-                linear_client=linear,
+                container_id=container_id,
+                backend=backend,
                 on_status_change=self._on_send_status_change,
                 cancel_check=self._cancel_event.is_set,
                 retry_failed=retry_failed,
             ):
-                pass  # generator drives the work; yielded values are for tests
+                pass
         except Exception as e:
             import logging
             logging.getLogger(__name__).exception("send worker crashed")
             error_msg = f"{type(e).__name__}: {e}"
         finally:
             try:
-                linear.close()
+                backend.close()
             except OSError:
                 # Best-effort socket cleanup after send finishes/fails.
                 pass
-            if linear in self._active_clients:
-                self._active_clients.remove(linear)
+            if backend in self._active_clients:
+                self._active_clients.remove(backend)
 
         if not self._cancel_event.is_set():
             self.after(0, self._on_send_finished, error_msg)
@@ -1053,8 +1528,10 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._refresh_send_button_label()
         from tasks.schema import TaskStatus
         if error_msg:
+            from tasks.errors import humanize
             self._status_label.configure(
-                text=f"✗ Отправка прервана: {error_msg}", text_color=RED,
+                text=f"✗ Отправка прервана: {humanize(error_msg)}",
+                text_color=RED,
             )
             return
         sent = sum(1 for t in self._tasks if t.status is TaskStatus.SENT)

@@ -237,11 +237,19 @@ def parse_and_validate(
 def extract(
     *,
     transcript: str,
-    team_id: str,
     model: str,
     lang: str | None,
-    linear_client: _LinearClient,
     openrouter_client: _LLMClient,
+    # Phase 6.4.1: extractor no longer fetches team context itself.
+    # Caller passes pre-fetched members/labels (Linear path) or empty
+    # lists (Glide path — no LLM grounding). The legacy team_id +
+    # linear_client params remain for backward compat with Phase 6.0–6.3
+    # callers (and the 21 existing tests); when both paths are provided,
+    # the explicit members/labels win.
+    members: list | None = None,
+    labels: list | None = None,
+    team_id: str | None = None,
+    linear_client: _LinearClient | None = None,
 ) -> dict:
     """Run the full extraction. Returns dict with tasks, corrections, usage,
     model echo, raw_response (for debugging / 'Show raw response' UI).
@@ -250,9 +258,13 @@ def extract(
         OpenRouterError, LinearError — for network/HTTP/auth issues
         ExtractionError              — for unrecoverable LLM-output issues
     """
-    ctx = linear_client.team_context(team_id)
-    members = ctx.get("members") or []
-    labels  = ctx.get("labels")  or []
+    if members is None and labels is None and linear_client is not None and team_id:
+        # Backward-compat path: fetch context ourselves.
+        ctx = linear_client.team_context(team_id)
+        members = ctx.get("members") or []
+        labels  = ctx.get("labels")  or []
+    members = members or []
+    labels  = labels  or []
 
     messages = build_prompt(transcript, members, labels, lang)
 
@@ -296,6 +308,64 @@ def extract(
         "members": members,
         "labels": labels,
     }
+
+
+def extract_one_task(
+    *,
+    free_text: str,
+    members: list | None = None,
+    labels: list | None = None,
+    lang: str | None,
+    model: str,
+    openrouter_client: _LLMClient,
+) -> Task | None:
+    """Extract ONE task from a short free-form description.
+
+    Mirrors ``extract()`` but for a single task — used by the Söyle
+    auto-fill flow (Phase 6.5). The prompt machinery doesn't care whether
+    the input is a meeting transcript or 1-3 sentences; we just feed the
+    free text in the user-message slot and take the first task from the
+    LLM's output.
+
+    Returns None when the LLM produces no valid tasks (e.g. it couldn't
+    figure out a title from the input). Caller surfaces this as a
+    user-visible error and lets the user re-phrase.
+
+    Raises the same exceptions as ``extract()``: ``OpenRouterError``
+    on network/HTTP, ``ExtractionError`` on unrecoverable LLM output.
+    """
+    members = members or []
+    labels  = labels  or []
+
+    messages = build_prompt(free_text, members, labels, lang)
+
+    try:
+        response = openrouter_client.complete(
+            model=model, messages=messages, json_mode=True,
+        )
+    except OpenRouterError as e:
+        if "вернул 400:" in str(e):
+            logger.info(
+                "model %s rejected json_mode in extract_one_task, retrying without response_format",
+                model,
+            )
+            response = openrouter_client.complete(
+                model=model, messages=messages, json_mode=False,
+            )
+        else:
+            raise
+
+    raw_content = response["content"]
+    try:
+        tasks, _corrections = parse_and_validate(raw_content, members, labels)
+    except ExtractionError as e:
+        logger.warning(
+            "extract_one_task: ExtractionError; raw LLM response:\n%s",
+            raw_content[:2000],
+        )
+        raise ExtractionError(str(e), raw_response=raw_content) from e
+
+    return tasks[0] if tasks else None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────

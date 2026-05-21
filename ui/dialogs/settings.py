@@ -99,6 +99,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._build_dictionaries_section(body)
         self._build_openrouter_section(body)
         self._build_linear_section(body)
+        self._build_glide_section(body)
 
         # --- Footer ---
         footer = ctk.CTkFrame(self, fg_color="transparent")
@@ -275,21 +276,31 @@ class SettingsDialog(ctk.CTkToplevel):
         ).grid(row=2, column=2, padx=(4, 4), pady=6)
 
         # Disclosure. Cloud means audio leaves the user's machine and
-        # ends up on a third-party server (US-based for AssemblyAI),
-        # which has privacy/compliance implications. Surfacing this
-        # right next to the toggle is the cheapest mitigation.
+        # ends up on a third-party server, which has privacy/compliance
+        # implications. Surfacing this right next to the toggle is the
+        # cheapest mitigation.
         label(
             section,
             "⚠ При включении аудио загружается на сервер провайдера. "
             "Не используй для конфиденциальных записей.",
             anchor="w",
         ).grid(row=3, column=0, columnspan=3, padx=4, pady=(2, 6), sticky="w")
+        # Static price summary. Cheapest with diarization first.
+        # OpenAI Whisper sits on its own line because it is the only
+        # provider without speaker labels.
         label(
             section,
-            "ℹ Стоимость AssemblyAI: ~$0.37/час без диаризации, "
-            "~$0.65/час с диаризацией.",
+            "ℹ Цены с диаризацией: Deepgram ~$0.43/ч • "
+            "Gladia ~$0.61/ч • AssemblyAI ~$0.65/ч • "
+            "Speechmatics ~$1.04/ч.",
             anchor="w",
-        ).grid(row=4, column=0, columnspan=3, padx=4, pady=(0, 4), sticky="w")
+        ).grid(row=4, column=0, columnspan=3, padx=4, pady=(0, 2), sticky="w")
+        label(
+            section,
+            "ℹ OpenAI Whisper ~$0.36/ч — только транскрипция, "
+            "без определения спикеров.",
+            anchor="w",
+        ).grid(row=5, column=0, columnspan=3, padx=4, pady=(0, 4), sticky="w")
 
     def _build_dictionaries_section(self, parent) -> None:
         section = self._section_card(parent, "Словари", row=5)
@@ -405,12 +416,24 @@ class SettingsDialog(ctk.CTkToplevel):
         """Linear API key + connection status.
 
         No team picker here — that's per-run in the ExtractTasksDialog
-        (Phase 6.1). Settings only persists the key.
+        (Phase 6.1). Settings only persists the key. Phase 6.4 adds the
+        enabled-checkbox above; when off, Linear is hidden from the
+        backend dropdown in ExtractTasksDialog (effect wired in 6.4.1).
         """
         section = self._section_card(parent, "Linear", row=7)
 
+        ctk.CTkCheckBox(
+            section, text="Использовать Linear",
+            variable=self._parent._linear_enabled_var,
+            command=self._parent._on_linear_enabled_changed,
+            font=ctk.CTkFont(family=FONT, size=13),
+            text_color=TEXT_PRIMARY, fg_color=BLUE, hover_color=BLUE_DIM,
+            border_color=BORDER, corner_radius=4,
+            checkbox_height=20, checkbox_width=20,
+        ).grid(row=0, column=0, columnspan=3, padx=4, pady=(2, 8), sticky="w")
+
         label(section, "API ключ").grid(
-            row=0, column=0, padx=(4, 8), pady=6, sticky="w",
+            row=1, column=0, padx=(4, 8), pady=6, sticky="w",
         )
         ctk.CTkEntry(
             section, textvariable=self._parent._linear_key_var, height=36,
@@ -419,19 +442,19 @@ class SettingsDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(family=FONT, size=12),
             placeholder_text="lin_api_...",
             show="•",
-        ).grid(row=0, column=1, padx=4, pady=6, sticky="ew")
+        ).grid(row=1, column=1, padx=4, pady=6, sticky="ew")
         tonal_button(
             section, text="Вставить",
             command=self._paste_linear_key, width=100,
-        ).grid(row=0, column=2, padx=(4, 4), pady=6)
+        ).grid(row=1, column=2, padx=(4, 4), pady=6)
 
         tonal_button(
             section, text="Проверить ключ",
             command=self._validate_linear, width=140,
-        ).grid(row=1, column=0, padx=4, pady=6, sticky="w")
+        ).grid(row=2, column=0, padx=4, pady=6, sticky="w")
         self._linear_status = label(section, "", anchor="w")
         self._linear_status.grid(
-            row=1, column=1, columnspan=2, padx=(8, 4), pady=6, sticky="ew",
+            row=2, column=1, columnspan=2, padx=(8, 4), pady=6, sticky="ew",
         )
 
     def _paste_linear_key(self) -> None:
@@ -491,6 +514,116 @@ class SettingsDialog(ctk.CTkToplevel):
             name = viewer.get("name") or viewer.get("email") or "(unknown)"
             self.after(0, self._linear_status.configure, {
                 "text": f"✓ Подключено: {name}", "text_color": GREEN,
+            })
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _build_glide_section(self, parent) -> None:
+        """Glide API key + connection status (Phase 6.4).
+
+        Glide is the parallel backend to Linear. Same pattern as the
+        Linear section above: enabled-checkbox at top, paste, validate
+        (saves on success), shows ✓/✗ status next to the button.
+        """
+        section = self._section_card(parent, "Glide", row=8)
+
+        ctk.CTkCheckBox(
+            section, text="Использовать Glide",
+            variable=self._parent._glide_enabled_var,
+            command=self._parent._on_glide_enabled_changed,
+            font=ctk.CTkFont(family=FONT, size=13),
+            text_color=TEXT_PRIMARY, fg_color=BLUE, hover_color=BLUE_DIM,
+            border_color=BORDER, corner_radius=4,
+            checkbox_height=20, checkbox_width=20,
+        ).grid(row=0, column=0, columnspan=3, padx=4, pady=(2, 8), sticky="w")
+
+        label(section, "API ключ").grid(
+            row=1, column=0, padx=(4, 8), pady=6, sticky="w",
+        )
+        ctk.CTkEntry(
+            section, textvariable=self._parent._glide_key_var, height=36,
+            corner_radius=10, border_color=BORDER, border_width=1,
+            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(family=FONT, size=12),
+            placeholder_text="glide_pk_<workspace>_...",
+            show="•",
+        ).grid(row=1, column=1, padx=4, pady=6, sticky="ew")
+        tonal_button(
+            section, text="Вставить",
+            command=self._paste_glide_key, width=100,
+        ).grid(row=1, column=2, padx=(4, 4), pady=6)
+
+        tonal_button(
+            section, text="Проверить ключ",
+            command=self._validate_glide, width=140,
+        ).grid(row=2, column=0, padx=4, pady=6, sticky="w")
+        self._glide_status = label(section, "", anchor="w")
+        self._glide_status.grid(
+            row=2, column=1, columnspan=2, padx=(8, 4), pady=6, sticky="ew",
+        )
+
+    def _paste_glide_key(self) -> None:
+        """Paste-from-clipboard. Mirrors _paste_linear_key."""
+        try:
+            text = self.clipboard_get().strip()
+            self._parent._glide_key_var.set(text)
+            if text:
+                self._parent._config["glide_api_key"] = text
+                save_config(self._parent._config)
+        except Exception:
+            pass
+
+    def _validate_glide(self) -> None:
+        """GET /boards via GlideClient.validate_key — proves the key works
+        and reports how many boards are visible to the integration token.
+
+        Saves the key to config.json only on success (mirrors Linear /
+        OpenRouter discipline — typing intermediate garbage doesn't persist).
+        """
+        key = self._parent._glide_key_var.get().strip()
+        if not key:
+            self._glide_status.configure(
+                text="Введите API ключ", text_color=RED,
+            )
+            return
+
+        self._glide_status.configure(
+            text="Проверка...", text_color=TEXT_SECONDARY,
+        )
+
+        def worker():
+            try:
+                # Lazy import — same rationale as _validate_linear.
+                from tasks.glide_client import GlideClient, GlideError
+                client = GlideClient(key)
+                try:
+                    info = client.validate_key()
+                finally:
+                    client.close()
+            except GlideError as e:
+                self.after(0, self._glide_status.configure, {
+                    "text": f"✗ {e}", "text_color": RED,
+                })
+                return
+            except Exception as e:
+                self.after(0, self._glide_status.configure, {
+                    "text": f"✗ {e}", "text_color": RED,
+                })
+                return
+
+            # Key works — persist it.
+            self._parent._config["glide_api_key"] = key
+            save_config(self._parent._config)
+
+            count = info["board_count"]
+            sample = info["sample_names"]
+            # "5 досок" / "1 доска" / "0 досок" — Russian noun-count is
+            # awkward; use a simple form that's correct for all sizes.
+            base = f"✓ Подключено: {count} досок"
+            if sample:
+                base += f" ({', '.join(sample)})"
+            self.after(0, self._glide_status.configure, {
+                "text": base, "text_color": GREEN,
             })
 
         threading.Thread(target=worker, daemon=True).start()

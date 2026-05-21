@@ -10,6 +10,11 @@
   "diarize_device": "Авто",
   "cloud_enabled": false,
   "cloud_provider": "AssemblyAI",
-  "cloud_api_key": "",
+  "cloud_api_keys": {},
+  "openrouter_api_key": "",
+  "linear_api_key": "",
+  "linear_enabled": true,
+  "glide_api_key": "",
+  "glide_enabled": true,
   "appearance_mode": "Системная"
 }

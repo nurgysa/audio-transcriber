@@ -17,14 +17,36 @@ _CURATED_MODELS = [
     "deepseek/deepseek-v3",
 ]
 
-_TEAMS_CACHE_KEY = "linear_teams_cache"
-_TEAMS_CACHE_TTL = timedelta(hours=24)
+_TEAMS_CACHE_KEY = "linear_teams_cache"      # Phase 6.1 — Linear teams
+_BOARDS_CACHE_KEY = "glide_boards_cache"     # Phase 6.4.1 — Glide boards
+_CONTAINER_CACHE_TTL = timedelta(hours=24)
+_TEAMS_CACHE_TTL = _CONTAINER_CACHE_TTL      # back-compat alias for any callers
 _RECENT_MODELS_KEY = "tasks_recent_models"
 _RECENT_MODELS_LIMIT = 5
 
-# Sonnet-4.5 input price per 1M tokens. Used for the cost-estimate hint.
-# Imprecise (we don't know the actual model's price) but useful as a sanity-check.
+# Per-backend dropdown labels — "Команда" for Linear (teams), "Доска" for
+# Glide (boards). Keeps the header label honest about what's underneath.
+_CONTAINER_LABEL_BY_BACKEND = {"linear": "Команда", "glide": "Доска"}
+
+# Sonnet-4.5 input price per 1M tokens. Used for the upfront cost-estimate
+# hint (before user runs Извлечь — we don't know which model yet, so we
+# approximate with the default).
 _COST_PER_1M_INPUT_TOKENS_USD = 3.0
+
+# Per-model pricing for the post-call **real** cost display in
+# _on_extract_success — uses response.usage tokens × these rates.
+# Tuple is (input_$_per_1M, output_$_per_1M). Updated 2026-04 from
+# OpenRouter pricing pages. May drift; if the response itself includes
+# `usage.cost`, that authoritative value is used and this table is
+# bypassed (see _compute_real_cost). New models should be added here
+# alongside _CURATED_MODELS.
+_MODEL_PRICING_USD_PER_M = {
+    "anthropic/claude-sonnet-4.5":  (3.00, 15.00),
+    "anthropic/claude-haiku-4.5":   (1.00,  5.00),
+    "openai/gpt-4o":                (2.50, 10.00),
+    "google/gemini-2.5-pro":        (1.25, 10.00),
+    "deepseek/deepseek-v3":         (0.27,  1.10),
+}
 
 _PRIORITY_GLYPHS = {
     "none":   "⚪",
