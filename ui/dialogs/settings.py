@@ -159,7 +159,7 @@ class SettingsDialog(ctk.CTkToplevel):
         ).grid(row=1, column=0, columnspan=2, padx=4, pady=(0, 4), sticky="w")
 
     def _build_transcription_section(self, parent) -> None:
-        from ui.app import DEVICES, LANGUAGES, MODELS
+        from ui.app import DEVICES, MODELS
 
         section = self._section_card(parent, "Транскрипция", row=1)
 
@@ -280,9 +280,6 @@ class SettingsDialog(ctk.CTkToplevel):
         check.grid(row=0, column=0, columnspan=2, padx=4, pady=6, sticky="w")
 
     def _build_cloud_section(self, parent) -> None:
-        # PROVIDERS is imported at module level — the lazy comment is kept
-        # only for historical context; the top-level import is now shared
-        # with _update_mixed_warning().
         section = self._section_card(parent, "Облако (опционально)", row=4)
 
         # Toggle. When ON, the local device pickers above are bypassed
