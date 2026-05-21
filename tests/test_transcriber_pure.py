@@ -13,6 +13,7 @@ from transcriber import (
     _assign_speakers_word_level,
     _build_initial_prompt,
     _check_cancelled,
+    _effective_whisper_language,
     _find_speaker_by_overlap,
     _parse_progress_line,
     _speaker_at_time,
@@ -53,6 +54,40 @@ def test_initial_prompt_truncates_at_last_comma():
     assert len(out) <= 400
     # Should truncate on a clean comma boundary, ending with a period.
     assert out.endswith(".")
+
+
+# ── _build_initial_prompt with "mixed" sentinel ────────────────────
+
+
+def test_initial_prompt_mixed_includes_trilingual_frame():
+    """`mixed` produces a frame mentioning all three languages so Whisper's
+    decode context biases toward accepting foreign-language inserts."""
+    out = _build_initial_prompt(language="mixed", hotwords_str=None)
+    assert out is not None
+    assert "қазақша" in out
+    assert "русский" in out
+    assert "English" in out
+
+
+def test_initial_prompt_mixed_with_terms_uses_trilingual_label():
+    """When hotwords supplied with `mixed`, the terms label is itself
+    trilingual ("Терминдер / Терминов / Terms")."""
+    out = _build_initial_prompt(language="mixed", hotwords_str="Slack, Нургиса")
+    assert out is not None
+    assert "Slack" in out
+    assert "Нургиса" in out
+    # Trilingual terms label — any one of the three keywords proves
+    # we picked the "mixed" frame, not "Terms:" fallback.
+    assert ("Терминдер" in out) or ("Терминов" in out) or ("Terms" in out)
+
+
+def test_initial_prompt_mixed_no_terms_omits_label():
+    """Frame-only (no hotwords) must not emit a dangling terms label."""
+    out = _build_initial_prompt(language="mixed", hotwords_str=None)
+    assert out is not None
+    assert "Терминдер" not in out
+    assert "Терминов" not in out
+    assert "Terms" not in out
 
 
 # ── _parse_progress_line ───────────────────────────────────────────
@@ -142,3 +177,25 @@ def test_assign_speakers_word_level_falls_back_when_words_missing():
     speaker_turns = [(0.0, 5.0, "A")]
     out = _assign_speakers_word_level(segments, speaker_turns)
     assert out == [{"start": 0.0, "end": 5.0, "text": "Текст", "speaker": "A"}]
+
+
+# ── _effective_whisper_language ────────────────────────────────────
+
+
+def test_effective_lang_mixed_becomes_none():
+    """Whisper API expects None for auto-detect; "mixed" is our internal
+    sentinel that means "let Whisper auto-detect but build a trilingual
+    initial_prompt"."""
+    assert _effective_whisper_language("mixed") is None
+
+
+def test_effective_lang_passes_through_single_codes():
+    """Single-language codes are passed through verbatim."""
+    assert _effective_whisper_language("ru") == "ru"
+    assert _effective_whisper_language("kk") == "kk"
+    assert _effective_whisper_language("en") == "en"
+
+
+def test_effective_lang_none_stays_none():
+    """None (UI's "Авто-определение") stays None."""
+    assert _effective_whisper_language(None) is None
