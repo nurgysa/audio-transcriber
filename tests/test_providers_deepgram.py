@@ -188,7 +188,7 @@ def test_deepgram_supports_mixed_false():
     assert DeepgramProvider.supports_mixed is False
 
 
-def test_submit_mixed_raises_provider_error_before_http(fake_audio):
+def test_transcribe_mixed_raises_before_http(fake_audio):
     """When called with language='mixed', Deepgram must raise BEFORE
     making any HTTP request. Defense-in-depth: the transcribe() cloud
     short-circuit (B.0) is the primary block; this is the secondary
