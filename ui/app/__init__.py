@@ -16,12 +16,8 @@ from theme import (
     BG,
     BLUE,
     BLUE_DIM,
-    BORDER,
-    FONT,
     GREEN,
-    PROGRESS_BG,
     RED,
-    SURFACE,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
 )
@@ -31,13 +27,6 @@ from ui.dialogs.settings import SettingsDialog
 from ui.dialogs.system_monitor import SystemMonitorDialog
 from ui.dialogs.terms import TermsDialog
 from ui.dialogs.voices import VoicesDialog
-from ui.widgets import (
-    card,
-    label,
-    option_menu,
-    primary_button,
-    tonal_button,
-)
 from utils import (
     create_history_entry,
     get_output_path,
@@ -51,6 +40,7 @@ from utils import (
 # ``app.py`` (the faulthandler bootstrap) keeps working through its existing
 # ``from ui.app import main``. ``main_entry`` imports ``App`` lazily inside
 # ``main()``, so this top-level import is safe — no circular load.
+from .builder import build_ui
 from .constants import (
     APPEARANCE_MODES,
     DEVICES,
@@ -120,7 +110,7 @@ class App(ctk.CTk):
         # Populated in _on_complete; consumed by _open_extract_tasks_dialog.
         self._last_history_folder: str | None = None
 
-        self._build_ui()
+        build_ui(self)
 
         # Token resolution order: config.json (set via "Вставить" button) →
         # HF_TOKEN env var. Env-sourced tokens are NOT written back to
@@ -129,281 +119,6 @@ class App(ctk.CTk):
         saved_token = self._config.get("hf_token", "") or os.environ.get("HF_TOKEN", "")
         if saved_token:
             self._hf_token_var.set(saved_token)
-
-    def _build_ui(self):
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(6, weight=1)  # text result row
-
-        # --- Header ---
-        header = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=52)
-        header.grid(row=0, column=0, sticky="ew")
-        header.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            header, text="Audio Transcriber",
-            font=ctk.CTkFont(family=FONT, size=17, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).grid(row=0, column=0, padx=24, pady=12)
-
-        self._lbl_status = ctk.CTkLabel(
-            header, text="", anchor="e",
-            font=ctk.CTkFont(family=FONT, size=12),
-            text_color=TEXT_SECONDARY,
-        )
-        self._lbl_status.grid(row=0, column=1, padx=24, pady=12, sticky="e")
-
-        # --- File card ---
-        file_card = card(self)
-        file_card.grid(row=1, column=0, padx=16, pady=(12, 6), sticky="ew")
-        file_card.grid_columnconfigure(1, weight=1)
-
-        self._btn_file = tonal_button(
-            file_card, text="Выбрать файл", command=self._select_file, width=150,
-        )
-        self._btn_file.grid(row=0, column=0, padx=16, pady=14)
-
-        self._lbl_file = label(file_card, text="Файл не выбран", anchor="w")
-        self._lbl_file.grid(row=0, column=1, padx=(0, 12), pady=14, sticky="ew")
-
-        self._btn_transcribe = primary_button(
-            file_card, text="Транскрибировать",
-            command=self._start_transcription, width=190, state="disabled",
-        )
-        self._btn_transcribe.grid(row=0, column=2, padx=16, pady=14)
-
-        # --- Recorder card ---
-        rec_card = card(self)
-        rec_card.grid(row=2, column=0, padx=16, pady=6, sticky="ew")
-        rec_card.grid_columnconfigure(2, weight=1)
-
-        self._btn_rec = ctk.CTkButton(
-            rec_card, text="⏺  Запись", width=130, height=40, corner_radius=20,
-            font=ctk.CTkFont(family=FONT, size=13, weight="bold"),
-            fg_color="#D93025", hover_color="#B3261E", text_color="#FFFFFF",
-            command=self._toggle_recording,
-        )
-        self._btn_rec.grid(row=0, column=0, padx=16, pady=14)
-
-        self._btn_rec_pause = tonal_button(
-            rec_card, text="Пауза", command=self._toggle_pause, width=100,
-            state="disabled",
-        )
-        self._btn_rec_pause.grid(row=0, column=1, padx=(0, 8), pady=14)
-
-        self._lbl_rec_time = label(rec_card, text="00:00", size=22, color=TEXT_PRIMARY)
-        self._lbl_rec_time.grid(row=0, column=2, padx=8, pady=14, sticky="w")
-
-        self._rec_level = ctk.CTkProgressBar(
-            rec_card, height=8, corner_radius=4, width=180,
-            fg_color=PROGRESS_BG, progress_color=GREEN,
-        )
-        self._rec_level.grid(row=0, column=3, padx=(8, 16), pady=14, sticky="e")
-        self._rec_level.set(0)
-
-        # --- Persistent state vars ---
-        # All settings StringVar/BooleanVar live on App as the source of truth.
-        # The Settings dialog binds widgets to these vars on demand; closing
-        # the dialog destroys widgets but leaves vars (and config.json state)
-        # intact, so _start_transcription always reads consistent values.
-        saved_lang = self._config.get("language", "Авто-определение")
-        self._lang_var = ctk.StringVar(
-            value=saved_lang if saved_lang in LANGUAGES else "Авто-определение",
-        )
-        # Default to large-v3 (maximum quality). On this machine large-v3
-        # int8_float16 is verified at ~1.5 GB VRAM and 5.7× realtime on GTX
-        # 1650 Ti — fast enough to be the everyday default.
-        saved_model = self._config.get("model", "large-v3 (максимум)")
-        self._model_var = ctk.StringVar(
-            value=saved_model if saved_model in MODELS else "large-v3 (максимум)",
-        )
-        self._diar_var = ctk.BooleanVar(value=False)
-        self._hf_token_var = ctk.StringVar()
-        saved_spk = self._config.get("speaker_count", "Авто")
-        self._spk_count_var = ctk.StringVar(
-            value=saved_spk if saved_spk in SPEAKER_COUNTS else "Авто",
-        )
-        self._normalize_var = ctk.BooleanVar(
-            value=bool(self._config.get("normalize_audio", True)),
-        )
-        saved_tr_dev = self._config.get("transcribe_device", "Авто")
-        self._tr_device_var = ctk.StringVar(
-            value=saved_tr_dev if saved_tr_dev in DEVICES else "Авто",
-        )
-        saved_di_dev = self._config.get("diarize_device", "Авто")
-        self._di_device_var = ctk.StringVar(
-            value=saved_di_dev if saved_di_dev in DEVICES else "Авто",
-        )
-
-        # Cloud (managed-API) state. When _cloud_enabled_var is True, the
-        # device pickers above are bypassed and transcription is routed to
-        # the chosen provider. Default is False — opt-in only, since the
-        # audio leaves the user's machine.
-        self._cloud_enabled_var = ctk.BooleanVar(
-            value=bool(self._config.get("cloud_enabled", False)),
-        )
-        self._cloud_provider_var = ctk.StringVar(
-            value=self._config.get("cloud_provider", "AssemblyAI"),
-        )
-        # Visible API-key field — populated from the per-provider dict
-        # for whichever provider is currently selected. _on_cloud_provider_changed
-        # swaps it on dropdown change; _paste_cloud_api_key writes it back
-        # into the dict for the active provider.
-        self._cloud_api_key_var = ctk.StringVar(
-            value=self._cloud_api_keys.get(
-                self._cloud_provider_var.get(), ""
-            ),
-        )
-
-        # Tasks pipeline (Phase 6.0+) — OpenRouter API key + default model slug.
-        # The default model is persisted on every change via trace_add (the
-        # CTk OptionMenu doesn't expose a `command=` for option selection that
-        # reaches App's save_config, so a Var-level write trace is the cleanest
-        # hook). The slug is stored as-is — Phase 6.4 may extend the curated
-        # list with custom user-typed slugs prefixed `(custom) `.
-        self._openrouter_key_var = ctk.StringVar(
-            value=self._config.get("openrouter_api_key", ""),
-        )
-        self._openrouter_default_model_var = ctk.StringVar(
-            value=self._config.get(
-                "tasks_default_model", "anthropic/claude-sonnet-4.5",
-            ),
-        )
-        self._openrouter_default_model_var.trace_add(
-            "write", lambda *_: self._on_openrouter_default_model_changed(),
-        )
-
-        # Linear API key (Phase 6.0+). No team picker here — that's per-run
-        # in the ExtractTasksDialog (Phase 6.1). Settings only persists the
-        # key. The key is saved on Validate success, not on every keystroke
-        # (same pattern as OpenRouter above and HF token below).
-        self._linear_key_var = ctk.StringVar(
-            value=self._config.get("linear_api_key", ""),
-        )
-
-        # Glide API key (Phase 6.4). Parallel backend to Linear. The board
-        # picker lives in ExtractTasksDialog (Phase 6.4.1) — Settings just
-        # persists the key. Same save-on-Validate-success discipline.
-        self._glide_key_var = ctk.StringVar(
-            value=self._config.get("glide_api_key", ""),
-        )
-
-        # Backend enabled flags (Phase 6.4). Per-backend preference whether
-        # to expose it in the ExtractTasksDialog dropdown (Phase 6.4.1).
-        # Default True for both — preserves prior behaviour for users who
-        # haven't touched Settings since 6.0. Persisted instantly on toggle
-        # (no save-on-Validate dance — these flags are standalone).
-        self._linear_enabled_var = ctk.BooleanVar(
-            value=bool(self._config.get("linear_enabled", True)),
-        )
-        self._glide_enabled_var = ctk.BooleanVar(
-            value=bool(self._config.get("glide_enabled", True)),
-        )
-
-        # Appearance mode (light/dark/system). The actual ctk.set_appearance_mode
-        # call already happened above with the saved value; this StringVar
-        # just drives the Settings dialog dropdown and the change callback.
-        saved_appearance_label = self._config.get("appearance_mode", "Системная")
-        self._appearance_var = ctk.StringVar(
-            value=saved_appearance_label
-            if saved_appearance_label in APPEARANCE_MODES else "Системная",
-        )
-
-        # --- Run controls card ---
-        # Slim card with only per-run controls: diarization toggle, speaker
-        # count hint, and the Settings button. Everything else (language,
-        # model, HF token, normalize, devices, dictionaries) lives in the
-        # Settings dialog, opened via the button on the right.
-        run_card = card(self)
-        run_card.grid(row=3, column=0, padx=16, pady=6, sticky="ew")
-        run_card.grid_columnconfigure(2, weight=1)
-
-        self._diar_check = ctk.CTkCheckBox(
-            run_card, text="Диаризация",
-            variable=self._diar_var, command=self._toggle_diarization,
-            font=ctk.CTkFont(family=FONT, size=13),
-            text_color=TEXT_PRIMARY, fg_color=BLUE, hover_color=BLUE_DIM,
-            border_color=BORDER, corner_radius=4,
-            checkbox_height=20, checkbox_width=20,
-        )
-        self._diar_check.grid(row=0, column=0, padx=(16, 16), pady=14, sticky="w")
-
-        # Speaker-count hint. Values map to pyannote hints:
-        #   "Авто"  → no hint (pyannote auto-detects)
-        #   "2".."4"→ num_speakers=K (exact hint; ~2× DER improvement when correct)
-        #   "5+"    → min_speakers=5 (open upper bound)
-        # Greyed out when diarize is off.
-        label(run_card, "Число спикеров").grid(row=0, column=1, padx=(0, 8), pady=14)
-        self._spk_count_menu = option_menu(
-            run_card, self._spk_count_var, list(SPEAKER_COUNTS.keys()),
-            command=self._on_speaker_count_changed, state="disabled",
-        )
-        self._spk_count_menu.grid(row=0, column=2, padx=(0, 12), pady=14, sticky="w")
-
-        # Monitor button: opens the non-modal system stats window.
-        # Sits to the LEFT of Settings — same row, two clickable buttons
-        # at the right edge of the run card.
-        self._btn_monitor = tonal_button(
-            run_card, text="Монитор",
-            command=self._open_monitor_dialog, width=110,
-        )
-        self._btn_monitor.grid(row=0, column=3, padx=(0, 8), pady=14, sticky="e")
-
-        self._btn_settings = tonal_button(
-            run_card, text="Настройки",
-            command=self._open_settings_dialog, width=140,
-        )
-        self._btn_settings.grid(row=0, column=4, padx=(0, 16), pady=14, sticky="e")
-
-        # --- Progress bar ---
-        self._progress = ctk.CTkProgressBar(
-            self, height=4, corner_radius=2,
-            fg_color=PROGRESS_BG, progress_color=BLUE,
-        )
-        self._progress.grid(row=5, column=0, padx=16, pady=(10, 0), sticky="ew")
-        self._progress.set(0)
-
-        # --- Text result ---
-        self._textbox = ctk.CTkTextbox(
-            self, wrap="word", corner_radius=16,
-            fg_color=SURFACE, text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(family=FONT, size=14),
-        )
-        self._textbox.grid(row=6, column=0, padx=16, pady=(8, 8), sticky="nsew")
-
-        # --- Action buttons ---
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.grid(row=7, column=0, padx=16, pady=(0, 14), sticky="ew")
-
-        self._btn_save = tonal_button(
-            btn_frame, text="Сохранить (TXT/SRT/VTT)", command=self._save_txt,
-            width=200, state="disabled",
-        )
-        self._btn_save.grid(row=0, column=0, padx=(0, 8), pady=4)
-
-        self._btn_copy = tonal_button(
-            btn_frame, text="Копировать", command=self._copy_text,
-            width=150, state="disabled",
-        )
-        self._btn_copy.grid(row=0, column=1, padx=8, pady=4)
-
-        self._btn_extract_tasks = tonal_button(
-            btn_frame, text="Извлечь задачи",
-            command=self._open_extract_tasks_dialog,
-            width=160, state="disabled",
-        )
-        self._btn_extract_tasks.grid(row=0, column=2, padx=8, pady=4)
-
-        self._btn_history = tonal_button(
-            btn_frame, text="История", command=self._open_history_dialog,
-            width=130,
-        )
-        self._btn_history.grid(row=0, column=3, padx=8, pady=4)
-
-        self._btn_cutter = tonal_button(
-            btn_frame, text="Audio Cutter", command=self._open_cutter,
-            width=140,
-        )
-        self._btn_cutter.grid(row=0, column=4, padx=8, pady=4)
 
     # ── Dialog launchers ───────────────────────────────────────
 
