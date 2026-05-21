@@ -28,8 +28,12 @@ class TranscriptionOptions:
     language: str | None = None        # "ru" | "kk" | "en" | "mixed" | None=auto
     # "mixed" is the KZ+RU+EN code-switching sentinel; providers branch on
     # it in _submit() and enable their native multilingual mode. Providers
-    # that can't handle one of KZ/RU/EN declare supports_mixed() -> False
-    # and raise ProviderError when called with language="mixed".
+    # set the ``supports_mixed`` class attribute to True once their _submit()
+    # has a mixed-aware branch (opt-in); the ABC default is False so that
+    # phased rollouts never expose 'mixed' through a provider that doesn't
+    # yet handle it. The transcribe() cloud short-circuit also enforces
+    # this by raising ProviderError when language="mixed" and the resolved
+    # provider class has supports_mixed=False.
     diarize: bool = False              # Request speaker labels.
     hotwords: list[str] = field(default_factory=list)
     num_speakers: int | None = None    # Exact speaker count, when known.
@@ -78,15 +82,17 @@ class TranscriptionProvider(ABC):
     supports_diarization: bool = False
 
     #: Whether this provider supports the KZ+RU+EN code-switching mode.
-    #: Default True — all currently-supported providers EXCEPT Deepgram
-    #: ship KZ in their multilingual models. Deepgram's nova-3 omits KZ
-    #: and overrides this to False (``supports_mixed = False``), then
-    #: raises ProviderError when called with ``options.language == "mixed"``.
-    #: Used by Settings UI to surface an inline warning when the current
-    #: provider can't service a stored 'Смешанный (KZ+RU+EN)' language
-    #: preference. Class attribute (not a method) to mirror
-    #: ``supports_diarization``; static introspectable capability.
-    supports_mixed: bool = True
+    #: Default False — providers must explicitly opt in by setting
+    #: ``supports_mixed = True`` once their ``_submit()`` actually maps the
+    #: 'mixed' sentinel to a native multilingual config. This keeps the
+    #: capability map honest at every commit during the phased PR-B/PR-C
+    #: rollout and avoids exposing 'Смешанный (KZ+RU+EN)' as selectable for
+    #: providers that aren't actually wired yet. When this is False and
+    #: ``language == "mixed"`` is requested, ``Transcriber.transcribe()``
+    #: raises a Russian-language ProviderError before any HTTP round-trip.
+    #: Class attribute (not a method) to mirror ``supports_diarization``;
+    #: static introspectable capability.
+    supports_mixed: bool = False
 
     @abstractmethod
     def transcribe(
