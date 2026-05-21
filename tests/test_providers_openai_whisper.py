@@ -156,7 +156,7 @@ def test_successful_round_trip(fake_audio):
     assert "speaker" not in result.segments[0]
 
 
-# ── language="mixed" branch ───────────────────────────────────────────
+# ── supports_mixed + language="mixed" branch ─────────────────────────
 
 
 def test_openai_whisper_supports_mixed_true():
