@@ -25,7 +25,11 @@ from dataclasses import dataclass, field
 class TranscriptionOptions:
     """Per-call options. Providers map these to their native API params."""
 
-    language: str | None = None        # "ru" | "kk" | "en" | None=auto-detect
+    language: str | None = None        # "ru" | "kk" | "en" | "mixed" | None=auto
+    # "mixed" is the KZ+RU+EN code-switching sentinel; providers branch on
+    # it in _submit() and enable their native multilingual mode. Providers
+    # that can't handle one of KZ/RU/EN declare supports_mixed() -> False
+    # and raise ProviderError when called with language="mixed".
     diarize: bool = False              # Request speaker labels.
     hotwords: list[str] = field(default_factory=list)
     num_speakers: int | None = None    # Exact speaker count, when known.
@@ -72,6 +76,21 @@ class TranscriptionProvider(ABC):
     #: True when the provider returns speaker labels (so the
     #: "Диаризация" checkbox is meaningful in cloud mode).
     supports_diarization: bool = False
+
+    def supports_mixed(self) -> bool:
+        """Whether this provider supports the KZ+RU+EN code-switching mode.
+
+        Default True — all currently-supported providers EXCEPT Deepgram
+        ship KZ in their multilingual models. Deepgram's nova-3 omits KZ
+        and overrides this to False, then raises ProviderError when called
+        with `options.language == "mixed"`.
+
+        Used by Settings UI to surface an inline warning when the current
+        provider can't service a stored 'Смешанный (KZ+RU+EN)' language
+        preference, and by the test suite to verify the capability
+        contract.
+        """
+        return True
 
     @abstractmethod
     def transcribe(
