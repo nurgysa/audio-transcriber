@@ -28,8 +28,12 @@ class TranscriptionOptions:
     language: str | None = None        # "ru" | "kk" | "en" | "mixed" | None=auto
     # "mixed" is the KZ+RU+EN code-switching sentinel; providers branch on
     # it in _submit() and enable their native multilingual mode. Providers
-    # that can't handle one of KZ/RU/EN declare supports_mixed() -> False
-    # and raise ProviderError when called with language="mixed".
+    # set the ``supports_mixed`` class attribute to True once their _submit()
+    # has a mixed-aware branch (opt-in); the ABC default is False so that
+    # phased rollouts never expose 'mixed' through a provider that doesn't
+    # yet handle it. The transcribe() cloud short-circuit also enforces
+    # this by raising ProviderError when language="mixed" and the resolved
+    # provider class has supports_mixed=False.
     diarize: bool = False              # Request speaker labels.
     hotwords: list[str] = field(default_factory=list)
     num_speakers: int | None = None    # Exact speaker count, when known.
