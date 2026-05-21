@@ -11,7 +11,9 @@ import pytest
 from providers import ProviderError
 from providers.base import TranscriptionOptions
 from providers.deepgram import (
-    DeepgramProvider, _build_params, _to_segments,
+    DeepgramProvider,
+    _build_params,
+    _to_segments,
 )
 from transcriber import TranscriptionCancelled
 

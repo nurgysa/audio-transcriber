@@ -14,7 +14,6 @@ from tasks.backends.glide import GlideBackend
 from tasks.backends.linear import LinearBackend
 from tasks.schema import Priority, Task
 
-
 # ── LinearBackend ────────────────────────────────────────────────────
 
 
@@ -37,7 +36,10 @@ def test_linear_bootstrap_returns_containers_with_key():
 
 def test_linear_container_label_includes_key():
     b = LinearBackend(MagicMock())
-    assert b.container_label(Container(id="t", name="Engineering", key="ENG")) == "Engineering (ENG)"
+    assert (
+        b.container_label(Container(id="t", name="Engineering", key="ENG"))
+        == "Engineering (ENG)"
+    )
     # Defensive — if key missing, fall back to name.
     assert b.container_label(Container(id="t", name="Solo")) == "Solo"
 

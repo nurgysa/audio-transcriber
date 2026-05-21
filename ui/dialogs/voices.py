@@ -5,14 +5,23 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 
 import customtkinter as ctk
 
 from recorder import Recorder
 from theme import (
-    BG, BLUE, BLUE_DIM, BORDER, FONT, RED,
-    SURFACE, SURFACE_BRIGHT, TEXT_PRIMARY, TEXT_SECONDARY,
+    BG,
+    BLUE,
+    BLUE_DIM,
+    BORDER,
+    FONT,
+    RED,
+    SURFACE,
+    SURFACE_BRIGHT,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
 )
 from utils import save_config
 
@@ -280,7 +289,8 @@ class VoicesDialog(ctk.CTkToplevel):
         if self._rec_tick_job is not None:
             try:
                 self.after_cancel(self._rec_tick_job)
-            except Exception:
+            except tk.TclError:
+                # Timer already fired or toplevel destroyed — both safe.
                 pass
             self._rec_tick_job = None
 
@@ -401,6 +411,7 @@ class VoicesDialog(ctk.CTkToplevel):
 
             data = _json.loads((proc.stdout or "").strip())
             import base64 as _b64
+
             import numpy as _np
             emb = _np.frombuffer(
                 _b64.b64decode(data["embedding_b64"]), dtype=_np.float32,
@@ -437,7 +448,8 @@ class VoicesDialog(ctk.CTkToplevel):
         if self._rec_tick_job is not None:
             try:
                 self.after_cancel(self._rec_tick_job)
-            except Exception:
+            except tk.TclError:
+                # Timer already fired or toplevel destroyed — both safe.
                 pass
             self._rec_tick_job = None
         self._cleanup_recording(delete_file=True)

@@ -5,7 +5,6 @@ import pytest
 
 from tasks.schema import Priority
 
-
 # ── Priority ──────────────────────────────────────────────────────────
 
 
@@ -63,7 +62,7 @@ def test_task_status_round_trip_via_value():
 
 def test_task_minimum_creation_with_only_title():
     """Title is the only required field; everything else has defaults."""
-    from tasks.schema import Task, Priority, TaskStatus
+    from tasks.schema import Priority, Task, TaskStatus
     t = Task(title="Починить login bug")
     assert t.title == "Починить login bug"
     assert t.description == ""
@@ -123,7 +122,7 @@ def test_task_round_trip_minimal():
 
 def test_task_round_trip_full():
     """Round-trip with every field populated."""
-    from tasks.schema import Task, Priority, TaskStatus
+    from tasks.schema import Priority, Task, TaskStatus
     original = Task(
         title="Починить login",
         description="Многострочное\nописание",
@@ -146,7 +145,7 @@ def test_task_round_trip_full():
 
 def test_task_to_dict_uses_string_values_for_enums():
     """JSON file must contain 'high' (string), not 2 (int) for priority."""
-    from tasks.schema import Task, Priority, TaskStatus
+    from tasks.schema import Priority, Task, TaskStatus
     t = Task(title="X", priority=Priority.HIGH, status=TaskStatus.SENT)
     d = t.to_dict()
     assert d["priority"] == "high"

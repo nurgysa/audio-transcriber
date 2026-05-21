@@ -24,8 +24,15 @@ import customtkinter as ctk
 import psutil
 
 from theme import (
-    BG, BLUE, BLUE_DIM, BORDER, FONT, GREEN, RED,
-    SURFACE, SURFACE_BRIGHT, TEXT_PRIMARY, TEXT_SECONDARY, t,
+    BG,
+    FONT,
+    GREEN,
+    RED,
+    SURFACE,
+    SURFACE_BRIGHT,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    t,
 )
 from ui.widgets import card, label
 
@@ -375,14 +382,18 @@ class SystemMonitorDialog(ctk.CTkToplevel):
             try:
                 section["spark"]._canvas.config(bg=new_bg)
                 section["spark"]._redraw()  # repaint with new bar colors
-            except Exception:
+            except tk.TclError:
+                # Sparkline widget destroyed during theme switch — next paint
+                # will use the new color anyway.
                 pass
 
     def _on_close(self) -> None:
         if self._after_id is not None:
             try:
                 self.after_cancel(self._after_id)
-            except Exception:
+            except tk.TclError:
+                # after_cancel raises if the timer ID is unknown (already
+                # fired/cancelled) or the toplevel is gone. Either way, OK.
                 pass
             self._after_id = None
         self._shutdown_nvml()

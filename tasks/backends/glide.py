@@ -18,7 +18,6 @@ from tasks.backends.base import Container, CreatedIssue
 from tasks.glide_client import GlideClient
 from tasks.schema import Priority, Task
 
-
 # Glide priority is a 4-string set; Linear has 5 (NONE is silently NULL).
 _PRIORITY_MAP: dict[Priority, str] = {
     Priority.URGENT: "critical",

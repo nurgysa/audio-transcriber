@@ -7,8 +7,13 @@ from pathlib import Path
 import pytest
 
 from tasks.persistence import (
-    PersistenceError, load_tasks_raw, save_tasks_raw, RAW_FILENAME,
-    MUTABLE_FILENAME, load_tasks, save_tasks,
+    MUTABLE_FILENAME,
+    RAW_FILENAME,
+    PersistenceError,
+    load_tasks,
+    load_tasks_raw,
+    save_tasks,
+    save_tasks_raw,
 )
 from tasks.schema import Priority, Task, TaskStatus
 
@@ -138,7 +143,10 @@ def _full_state_tasks() -> list[Task]:
 
 
 def test_save_tasks_writes_full_state(tmp_path: Path):
-    """tasks.json includes user-state fields (selected, status, linear_*) — unlike tasks_raw.json."""
+    """tasks.json carries user-state fields (selected, status, linear_*).
+
+    Unlike tasks_raw.json which is the immutable LLM snapshot.
+    """
     save_tasks(str(tmp_path), _full_state_tasks(), _sample_meta())
     data = json.loads((tmp_path / MUTABLE_FILENAME).read_text(encoding="utf-8"))
     sample = data["tasks"][0]

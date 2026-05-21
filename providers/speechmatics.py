@@ -23,10 +23,11 @@ import time
 import requests
 
 from .base import (
-    ProviderError, TranscriptionOptions, TranscriptionProvider,
+    ProviderError,
+    TranscriptionOptions,
+    TranscriptionProvider,
     TranscriptionResult,
 )
-
 
 _API_BASE = "https://asr.api.speechmatics.com/v2"
 _POLL_INTERVAL_S = 5.0    # Speechmatics is slower than Deepgram/AssemblyAI.

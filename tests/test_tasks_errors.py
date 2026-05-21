@@ -5,7 +5,6 @@ import pytest
 
 from tasks.errors import humanize
 
-
 # ── DNS / corporate VPN ──────────────────────────────────────────────
 
 

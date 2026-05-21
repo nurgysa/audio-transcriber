@@ -25,9 +25,12 @@ embedding extraction lives in enrollment_worker.py.
 from __future__ import annotations
 
 import base64
+import logging
 from datetime import datetime
 
 import numpy as np
+
+_logger = logging.getLogger(__name__)
 
 
 def encode_embedding(embedding: np.ndarray) -> str:
@@ -73,7 +76,11 @@ def voices_from_config(config: dict) -> list[dict]:
             continue
         try:
             emb = decode_embedding(enc)
-        except Exception:
+        except (ValueError, TypeError) as e:
+            # Corrupted base64, wrong dtype, or truncated payload — skip the
+            # entry but warn so the user knows their voice library has a
+            # bad entry that needs re-enrollment.
+            _logger.warning("Skipping voice %r: bad embedding (%s)", name, e)
             continue
         out.append({
             "name": str(name),

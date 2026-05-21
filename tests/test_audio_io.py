@@ -9,10 +9,13 @@ import pytest
 import soundfile as sf
 
 from audio_io import (
-    SAMPLE_RATE, _ffmpeg_time, ensure_wav, get_duration_s,
-    load_mono_float32, split_wav_into_chunks,
+    SAMPLE_RATE,
+    _ffmpeg_time,
+    ensure_wav,
+    get_duration_s,
+    load_mono_float32,
+    split_wav_into_chunks,
 )
-
 
 # ── _ffmpeg_time ───────────────────────────────────────────────────
 
@@ -33,7 +36,10 @@ def test_ffmpeg_time(seconds, expected):
 def _write_silent_wav(path, seconds: float, channels: int = 1) -> None:
     """Generate a silent WAV at the project's standard 16 kHz sample rate."""
     n = int(seconds * SAMPLE_RATE)
-    data = np.zeros((n, channels), dtype=np.float32) if channels > 1 else np.zeros(n, dtype=np.float32)
+    if channels > 1:
+        data = np.zeros((n, channels), dtype=np.float32)
+    else:
+        data = np.zeros(n, dtype=np.float32)
     sf.write(str(path), data, SAMPLE_RATE, subtype="PCM_16")
 
 

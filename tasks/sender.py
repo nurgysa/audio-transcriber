@@ -30,10 +30,10 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Callable, Iterator
+from collections.abc import Callable, Iterator
 
-from tasks.linear_client import LinearError
 from tasks.glide_client import GlideError
+from tasks.linear_client import LinearError
 from tasks.schema import Task, TaskStatus
 
 logger = logging.getLogger(__name__)

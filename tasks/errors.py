@@ -30,7 +30,6 @@ robust even if a backend introduces a new error class tomorrow.
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 # Hosts that we *know* are corporate / VPN-gated. When a NameResolution
 # error mentions one of these, the user almost certainly needs to enable
@@ -41,9 +40,9 @@ _CORPORATE_HOST_PATTERNS = (
 
 
 def humanize(
-    exc: "BaseException | str | None",
+    exc: BaseException | str | None,
     *,
-    fallback: Optional[str] = None,
+    fallback: str | None = None,
 ) -> str:
     """Convert a backend exception (or raw error message string) to a
     short user-friendly Russian message. Always returns a non-empty
@@ -182,7 +181,7 @@ def humanize(
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _detect_backend(msg: str) -> Optional[str]:
+def _detect_backend(msg: str) -> str | None:
     """Identify which backend produced the error from its message prefix.
 
     Returns ``"linear"`` / ``"glide"`` / ``"openrouter"`` / None.
@@ -197,7 +196,7 @@ def _detect_backend(msg: str) -> Optional[str]:
     return None
 
 
-def _extract_http_status(msg: str) -> Optional[int]:
+def _extract_http_status(msg: str) -> int | None:
     """Extract a 3-digit HTTP status code (4xx/5xx) from an error
     message. Mirrors the conservative regex in sender._short_error_code
     to avoid matching token counts or other 3-digit numbers.

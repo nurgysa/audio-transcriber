@@ -11,7 +11,9 @@ import pytest
 from providers import ProviderError
 from providers.base import TranscriptionOptions
 from providers.openai_whisper import (
-    OpenAIWhisperProvider, _MAX_FILE_BYTES, _to_segments,
+    _MAX_FILE_BYTES,
+    OpenAIWhisperProvider,
+    _to_segments,
 )
 from transcriber import TranscriptionCancelled
 

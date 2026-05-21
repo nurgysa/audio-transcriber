@@ -2,10 +2,15 @@
 import pytest
 
 from transcript_format import (
-    _build_speaker_map, _fmt_time_human, _fmt_time_srt, _fmt_time_vtt,
-    format_diarized, format_srt, format_timed, format_vtt,
+    _build_speaker_map,
+    _fmt_time_human,
+    _fmt_time_srt,
+    _fmt_time_vtt,
+    format_diarized,
+    format_srt,
+    format_timed,
+    format_vtt,
 )
-
 
 # ── time formatters ────────────────────────────────────────────────
 

@@ -23,10 +23,11 @@ import os
 import requests
 
 from .base import (
-    ProviderError, TranscriptionOptions, TranscriptionProvider,
+    ProviderError,
+    TranscriptionOptions,
+    TranscriptionProvider,
     TranscriptionResult,
 )
-
 
 _API_URL = "https://api.openai.com/v1/audio/transcriptions"
 # OpenAI rejects files above 25 MB at the gateway, returning a generic

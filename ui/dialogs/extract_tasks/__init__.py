@@ -18,207 +18,41 @@ isolated.
 """
 from __future__ import annotations
 
-import json
 import os
 import threading
-import webbrowser
+import tkinter as tk
 from collections import deque
 from datetime import datetime, timedelta
 from tkinter import messagebox
-from typing import Optional
 
 import customtkinter as ctk
 
 from theme import (
-    BG, BLUE_DIM, BORDER, FONT, GREEN, INPUT_BG, RED, SURFACE,
-    TEXT_PRIMARY, TEXT_SECONDARY,
+    BG,
+    BORDER,
+    FONT,
+    GREEN,
+    INPUT_BG,
+    RED,
+    SURFACE,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
 )
-# Note: BLUE_DIM is reserved for the _TaskRow checkbox accent in Task 6.2-3.
-from ui.widgets import label, option_menu, primary_button, tonal_button
+from ui.widgets import label, primary_button, tonal_button
 from utils import save_config
 
-
-# Same curated list as Settings → OpenRouter section, kept in sync manually.
-# (Phase 6.4 may replace both with a live /models browser.)
-_CURATED_MODELS = [
-    "anthropic/claude-sonnet-4.5",
-    "anthropic/claude-haiku-4.5",
-    "openai/gpt-4o",
-    "google/gemini-2.5-pro",
-    "deepseek/deepseek-v3",
-]
-
-_TEAMS_CACHE_KEY = "linear_teams_cache"      # Phase 6.1 — Linear teams
-_BOARDS_CACHE_KEY = "glide_boards_cache"     # Phase 6.4.1 — Glide boards
-_CONTAINER_CACHE_TTL = timedelta(hours=24)
-_TEAMS_CACHE_TTL = _CONTAINER_CACHE_TTL      # back-compat alias for any callers
-_RECENT_MODELS_KEY = "tasks_recent_models"
-_RECENT_MODELS_LIMIT = 5
-
-# Per-backend dropdown labels — "Команда" for Linear (teams), "Доска" for
-# Glide (boards). Keeps the header label honest about what's underneath.
-_CONTAINER_LABEL_BY_BACKEND = {"linear": "Команда", "glide": "Доска"}
-
-# Sonnet-4.5 input price per 1M tokens. Used for the upfront cost-estimate
-# hint (before user runs Извлечь — we don't know which model yet, so we
-# approximate with the default).
-_COST_PER_1M_INPUT_TOKENS_USD = 3.0
-
-# Per-model pricing for the post-call **real** cost display in
-# _on_extract_success — uses response.usage tokens × these rates.
-# Tuple is (input_$_per_1M, output_$_per_1M). Updated 2026-04 from
-# OpenRouter pricing pages. May drift; if the response itself includes
-# `usage.cost`, that authoritative value is used and this table is
-# bypassed (see _compute_real_cost). New models should be added here
-# alongside _CURATED_MODELS.
-_MODEL_PRICING_USD_PER_M = {
-    "anthropic/claude-sonnet-4.5":  (3.00, 15.00),
-    "anthropic/claude-haiku-4.5":   (1.00,  5.00),
-    "openai/gpt-4o":                (2.50, 10.00),
-    "google/gemini-2.5-pro":        (1.25, 10.00),
-    "deepseek/deepseek-v3":         (0.27,  1.10),
-}
-
-_PRIORITY_GLYPHS = {
-    "none":   "⚪",
-    "low":    "🔵",
-    "medium": "🟡",
-    "high":   "🟠",
-    "urgent": "🔴",
-}
-
-
-class _TaskRow(ctk.CTkFrame):
-    """One row in the left task list. Clicking the row body selects;
-    clicking the checkbox toggles selected without selecting.
-    """
-
-    def __init__(
-        self, parent, task, *, on_select, on_toggle,
-    ):
-        super().__init__(parent, fg_color="transparent", corner_radius=6)
-        self._task = task
-        self._on_select = on_select
-        self._on_toggle = on_toggle
-        self._selected_visual = False
-
-        self.grid_columnconfigure(1, weight=1)
-
-        self._var_checked = ctk.BooleanVar(value=task.selected)
-        self._check = ctk.CTkCheckBox(
-            self, text="", variable=self._var_checked,
-            command=self._handle_toggle,
-            checkbox_height=18, checkbox_width=18,
-            fg_color=BLUE_DIM, hover_color=BLUE_DIM, border_color=BORDER,
-        )
-        self._check.grid(row=0, column=0, padx=(8, 6), pady=4, sticky="w")
-
-        self._lbl_title = ctk.CTkLabel(
-            self, text=task.title or "(без заголовка)",
-            font=ctk.CTkFont(family=FONT, size=13, weight="bold"),
-            text_color=TEXT_PRIMARY, anchor="w",
-        )
-        self._lbl_title.grid(row=0, column=1, padx=2, pady=(4, 0), sticky="ew")
-
-        self._lbl_summary = ctk.CTkLabel(
-            self, text=self._summary_text(),
-            font=ctk.CTkFont(family=FONT, size=11),
-            text_color=TEXT_SECONDARY, anchor="w",
-        )
-        self._lbl_summary.grid(row=1, column=1, padx=2, pady=(0, 4), sticky="ew")
-
-        # Click anywhere on the body (except the checkbox) to select.
-        for w in (self, self._lbl_title, self._lbl_summary):
-            w.bind("<Button-1>", self._handle_click)
-
-    def _handle_click(self, _event=None):
-        # If the task has been sent to Linear, a click opens the issue page;
-        # the editor form is irrelevant at that point.
-        from tasks.schema import TaskStatus
-        if (
-            self._task.status is TaskStatus.SENT
-            and self._task.linear_issue_url
-        ):
-            webbrowser.open(self._task.linear_issue_url)
-            return
-        self._on_select(self._task)
-
-    def _handle_toggle(self):
-        self._task.selected = bool(self._var_checked.get())
-        self._on_toggle()
-
-    def set_selected_visual(self, selected: bool) -> None:
-        self._selected_visual = selected
-        self.configure(fg_color=SURFACE if selected else "transparent")
-
-    def refresh_from_task(self) -> None:
-        """Re-render summary + title from the underlying task. Called after
-        edits to keep the row in sync with the form."""
-        self._lbl_title.configure(text=self._task.title or "(без заголовка)")
-        self._lbl_summary.configure(text=self._summary_text())
-        self._var_checked.set(self._task.selected)
-        # Re-apply any status badge so the row stays consistent after a
-        # destructive op (delete + undo, in particular).
-        self.set_status_visual(
-            self._task.status,
-            identifier=self._task.linear_issue_id,
-            error_code=self._task.send_error,
-        )
-
-    def set_status_visual(
-        self, status, *,
-        identifier: Optional[str] = None,
-        error_code: Optional[str] = None,
-    ) -> None:
-        """Replace the checkbox with a status badge after send begins.
-
-        PENDING → restore checkbox; SENDING/SENT/FAILED/SKIPPED → badge.
-        Identifier (e.g. ``ENG-1234``) appended to the summary when SENT.
-        """
-        from tasks.schema import TaskStatus
-        if status is TaskStatus.PENDING:
-            if hasattr(self, "_status_badge"):
-                self._status_badge.grid_remove()
-            self._check.grid()
-            # Restore the plain summary in case it had ``· ENG-…`` appended.
-            self._lbl_summary.configure(text=self._summary_text())
-            return
-
-        if not hasattr(self, "_status_badge"):
-            self._status_badge = ctk.CTkLabel(
-                self, text="", width=28,
-                font=ctk.CTkFont(family=FONT, size=14, weight="bold"),
-                anchor="center",
-            )
-            self._status_badge.grid(
-                row=0, column=0, padx=(8, 6), pady=4, sticky="w",
-            )
-
-        self._check.grid_remove()
-        self._status_badge.grid()
-
-        if status is TaskStatus.SENDING:
-            self._status_badge.configure(text="⏳", text_color=BLUE_DIM)
-            self._lbl_summary.configure(text=self._summary_text())
-        elif status is TaskStatus.SENT:
-            self._status_badge.configure(text="✓", text_color=GREEN)
-            base = self._summary_text()
-            if identifier:
-                self._lbl_summary.configure(text=f"{base}  ·  {identifier}")
-            else:
-                self._lbl_summary.configure(text=base)
-        elif status is TaskStatus.FAILED:
-            code = error_code or "?"
-            self._status_badge.configure(text=f"⚠{code}", text_color=RED)
-            self._lbl_summary.configure(text=self._summary_text())
-        elif status is TaskStatus.SKIPPED:
-            self._status_badge.configure(text="—", text_color=TEXT_SECONDARY)
-            self._lbl_summary.configure(text=self._summary_text())
-
-    def _summary_text(self) -> str:
-        glyph = _PRIORITY_GLYPHS.get(self._task.priority.name.lower(), "⚪")
-        assignee = self._task.assignee_name or "—"
-        return f"👤 {assignee}  ·  {glyph} {self._task.priority.name.lower()}"
+from .constants import (
+    _BOARDS_CACHE_KEY,
+    _CONTAINER_CACHE_TTL,
+    _CONTAINER_LABEL_BY_BACKEND,
+    _COST_PER_1M_INPUT_TOKENS_USD,
+    _CURATED_MODELS,
+    _MODEL_PRICING_USD_PER_M,
+    _RECENT_MODELS_KEY,
+    _RECENT_MODELS_LIMIT,
+    _TEAMS_CACHE_KEY,
+)
+from .task_row import _TaskRow
 
 
 class ExtractTasksDialog(ctk.CTkToplevel):
@@ -230,7 +64,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         *,
         transcript: str,
         history_folder: str,
-        transcript_lang: Optional[str],
+        transcript_lang: str | None,
         config: dict,
     ):
         super().__init__(parent)
@@ -257,7 +91,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # save_tasks (extracted_at, model, team_id, team_name, transcript_lang).
         self._tasks: list = []      # list[Task]
         self._task_rows: list = []  # list[_TaskRow] — populated by _render_task_list
-        self._selected_index: Optional[int] = None
+        self._selected_index: int | None = None
         self._meta: dict = {}       # populated post-extract or post-load
         # Undo stack (5 deep) of deepcopy(self._tasks) snapshots before destructive ops.
         self._undo_stack: deque = deque(maxlen=5)
@@ -625,7 +459,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
     def _populate_container_dropdown(self) -> None:
         if not self._containers:
-            empty_label = "(нет досок)" if self._current_backend_name() == "glide" else "(нет команд)"
+            empty_label = (
+                "(нет досок)"
+                if self._current_backend_name() == "glide"
+                else "(нет команд)"
+            )
             self._team_var.set(empty_label)
             self._team_menu.configure(values=[empty_label])
             return
@@ -690,10 +528,10 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         return None
 
     def _run_extraction(self, container, model: str, backend_name: str) -> None:
-        from tasks.extractor import extract, ExtractionError
         from tasks.backends import backend_from_name
-        from tasks.linear_client import LinearError
+        from tasks.extractor import ExtractionError, extract
         from tasks.glide_client import GlideError
+        from tasks.linear_client import LinearError
         from tasks.openrouter_client import OpenRouterClient, OpenRouterError
         from tasks.persistence import save_tasks_raw
 
@@ -768,7 +606,8 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 if c is not None:
                     try:
                         c.close()
-                    except Exception:
+                    except OSError:
+                        # Best-effort socket cleanup — pool may already be torn down.
                         pass
                     if c in self._active_clients:
                         self._active_clients.remove(c)
@@ -837,7 +676,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         if prompt == 0 and completion == 0:
             return ""
 
-        cost: Optional[float] = None
+        cost: float | None = None
         if "cost" in usage and isinstance(usage.get("cost"), (int, float)):
             cost = float(usage["cost"])
         else:
@@ -853,7 +692,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             return toks_part
         return f"{toks_part}  ·  ${cost:.4f}"
 
-    def _on_extract_error(self, msg: str, raw_response: Optional[str]) -> None:
+    def _on_extract_error(self, msg: str, raw_response: str | None) -> None:
         from tasks.errors import humanize
         self._status_label.configure(text=f"✗ {humanize(msg)}", text_color=RED)
         if raw_response:
@@ -922,7 +761,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # Persist any pending form edits before tearing down.
         try:
             self._persist_current_task()
-        except Exception:
+        except OSError:
             import logging
             logging.getLogger(__name__).exception("persist on close failed")
         self._cancel_event.set()
@@ -932,11 +771,13 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         for c in list(self._active_clients):
             try:
                 c.close()
-            except Exception:
+            except OSError:
+                # Best-effort socket cleanup during dialog teardown.
                 pass
         try:
             self.grab_release()
-        except Exception:
+        except tk.TclError:
+            # Toplevel already destroyed (e.g. window closed via X) — no grab to release.
             pass
         self.destroy()
 
@@ -1061,7 +902,8 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         ):
             try:
                 w.configure(state=state)
-            except Exception:
+            except tk.TclError:
+                # Widget destroyed mid-busy-toggle — UI already going away.
                 pass
 
     # ── Editor handlers ──────────────────────────────────────────
@@ -1212,13 +1054,15 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
         self._set_selection(new_index)
 
-    def _set_selection(self, new_index: Optional[int]) -> None:
+    def _set_selection(self, new_index: int | None) -> None:
         """Update visual selection + form binding."""
         # Clear previous visual.
-        if self._selected_index is not None and self._selected_index < len(getattr(self, "_task_rows", [])):
+        rows = getattr(self, "_task_rows", [])
+        if self._selected_index is not None and self._selected_index < len(rows):
             try:
                 self._task_rows[self._selected_index].set_selected_visual(False)
-            except Exception:
+            except tk.TclError:
+                # Row widget destroyed (rerender during selection switch).
                 pass
 
         self._selected_index = new_index
@@ -1347,7 +1191,9 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         if self._selected_index < len(getattr(self, "_task_rows", [])):
             try:
                 self._task_rows[self._selected_index].refresh_from_task()
-            except Exception:
+            except tk.TclError:
+                # Row widget destroyed mid-refresh — title/summary updates lost
+                # but next render rebuilds from self._tasks.
                 pass
         self._save_tasks_to_disk()
 
@@ -1423,12 +1269,12 @@ class ExtractTasksDialog(ctk.CTkToplevel):
     ) -> None:
         """Worker thread: drive extract_one_task. Marshalls success or
         error back to the main thread via self.after."""
-        from tasks.extractor import extract_one_task, ExtractionError
+        from tasks.extractor import ExtractionError, extract_one_task
         from tasks.openrouter_client import OpenRouterClient, OpenRouterError
 
         openrouter = None
-        result: Optional[object] = None
-        error_msg: Optional[str] = None
+        result: object | None = None
+        error_msg: str | None = None
         try:
             openrouter = OpenRouterClient(api_key)
             self._active_clients.append(openrouter)
@@ -1524,7 +1370,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             try:
                 from tasks.persistence import save_tasks
                 save_tasks(self._history_folder, self._tasks, self._meta)
-            except Exception:
+            except OSError:
                 import logging
                 logging.getLogger(__name__).exception("auto-save tasks.json failed")
         # Refresh Send/Retry button labels regardless of disk-save outcome
@@ -1590,7 +1436,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # Flush any pending form edits into the in-memory task before sending.
         try:
             self._persist_current_task()
-        except Exception:
+        except OSError:
             import logging
             logging.getLogger(__name__).exception("persist before send failed")
 
@@ -1617,7 +1463,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
         backend = backend_from_name(backend_name, self._config)
         self._active_clients.append(backend)
-        error_msg: Optional[str] = None
+        error_msg: str | None = None
         try:
             for _ in send_tasks_iter(
                 self._tasks,
@@ -1635,7 +1481,8 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         finally:
             try:
                 backend.close()
-            except Exception:
+            except OSError:
+                # Best-effort socket cleanup after send finishes/fails.
                 pass
             if backend in self._active_clients:
                 self._active_clients.remove(backend)
@@ -1654,7 +1501,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             try:
                 from tasks.persistence import save_tasks
                 save_tasks(self._history_folder, self._tasks, self._meta)
-            except Exception:
+            except OSError:
                 import logging
                 logging.getLogger(__name__).exception(
                     "save_tasks during send failed",
@@ -1675,7 +1522,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # Live update of the count on the Send button as tasks transition.
         self._refresh_send_button_label()
 
-    def _on_send_finished(self, error_msg: Optional[str]) -> None:
+    def _on_send_finished(self, error_msg: str | None) -> None:
         """Main-thread completion callback for the send worker."""
         self._set_busy(False)
         self._refresh_send_button_label()
@@ -1718,13 +1565,17 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
     def _try_load_existing_tasks(self) -> None:
         from pathlib import Path
+
         from tasks.persistence import MUTABLE_FILENAME, load_tasks
         path = Path(self._history_folder) / MUTABLE_FILENAME
         if not path.is_file():
             return
         try:
             loaded = load_tasks(self._history_folder)
-        except Exception:
+        except (OSError, ValueError, KeyError):
+            # OSError = file I/O; ValueError = JSON decode; KeyError = schema
+            # mismatch (older format, hand-edited file). All recoverable —
+            # treat as "no existing session" and let the user re-extract.
             import logging
             logging.getLogger(__name__).exception("could not load existing tasks.json")
             return

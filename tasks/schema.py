@@ -13,7 +13,6 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import Optional
 
 
 class Priority(IntEnum):
@@ -52,19 +51,19 @@ class Task:
     title: str
     description: str = ""
     priority: Priority = Priority.NONE
-    assignee_id: Optional[str] = None     # Linear member UUID
-    assignee_name: Optional[str] = None   # cached display name for UI
+    assignee_id: str | None = None     # Linear member UUID
+    assignee_name: str | None = None   # cached display name for UI
     label_ids: list[str] = field(default_factory=list)
     label_names: list[str] = field(default_factory=list)
-    due_date: Optional[str] = None        # ISO "YYYY-MM-DD"
+    due_date: str | None = None        # ISO "YYYY-MM-DD"
 
     # ── Local-only fields ──
     local_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     selected: bool = True
     status: TaskStatus = TaskStatus.PENDING
-    linear_issue_id: Optional[str] = None
-    linear_issue_url: Optional[str] = None
-    send_error: Optional[str] = None
+    linear_issue_id: str | None = None
+    linear_issue_url: str | None = None
+    send_error: str | None = None
 
     def to_dict(self) -> dict:
         """Serialize to JSON-friendly dict. Enums become their .value (str)."""
@@ -86,7 +85,7 @@ class Task:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Task":
+    def from_dict(cls, d: dict) -> Task:
         """Inverse of to_dict. Tolerant of missing optional fields.
 
         Older tasks.json files (pre-Phase-6.3) may lack status/linear_*;

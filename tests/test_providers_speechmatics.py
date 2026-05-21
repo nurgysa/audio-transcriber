@@ -11,7 +11,10 @@ import pytest
 from providers import ProviderError
 from providers.base import TranscriptionOptions
 from providers.speechmatics import (
-    SpeechmaticsProvider, _build_config, _normalise_speaker, _to_segments,
+    SpeechmaticsProvider,
+    _build_config,
+    _normalise_speaker,
+    _to_segments,
 )
 from transcriber import TranscriptionCancelled
 

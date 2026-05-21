@@ -27,7 +27,6 @@ Public API:
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import requests
 
@@ -75,8 +74,8 @@ class GlideClient:
         method: str,
         path: str,
         *,
-        json_body: Optional[dict] = None,
-        idempotency_key: Optional[str] = None,
+        json_body: dict | None = None,
+        idempotency_key: str | None = None,
         timeout: float = _DEFAULT_TIMEOUT_S,
     ) -> dict:
         """Single HTTP-method entry point. Returns parsed JSON on 2xx.
@@ -182,12 +181,12 @@ class GlideClient:
         self,
         *,
         title: str,
-        description: Optional[str] = None,
-        priority: Optional[str] = None,
-        board_id: Optional[str] = None,
-        group_id: Optional[str] = None,
-        fields: Optional[dict] = None,
-        idempotency_key: Optional[str] = None,
+        description: str | None = None,
+        priority: str | None = None,
+        board_id: str | None = None,
+        group_id: str | None = None,
+        fields: dict | None = None,
+        idempotency_key: str | None = None,
     ) -> dict:
         """POST /tasks — create one task. Returns the response dict as-is.
 

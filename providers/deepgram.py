@@ -26,10 +26,11 @@ import os
 import requests
 
 from .base import (
-    ProviderError, TranscriptionOptions, TranscriptionProvider,
+    ProviderError,
+    TranscriptionOptions,
+    TranscriptionProvider,
     TranscriptionResult,
 )
-
 
 _API_URL = "https://api.deepgram.com/v1/listen"
 # Same chunk size as the AssemblyAI uploader — small enough for snappy

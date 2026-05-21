@@ -6,10 +6,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from tasks.extractor import (
-    ExtractionError, build_prompt, extract, extract_one_task, parse_and_validate,
+    ExtractionError,
+    build_prompt,
+    extract,
+    extract_one_task,
+    parse_and_validate,
 )
 from tasks.schema import Priority
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────
 

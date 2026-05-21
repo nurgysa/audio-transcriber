@@ -268,7 +268,10 @@ def test_request_raises_on_500_propagates_error_code():
     c = GlideClient("glide_pk_test_abc")
     with patch.object(
         c._session, "request",
-        return_value=_resp(500, json_body={"error": {"code": "internal_error", "message": "DB down"}}),
+        return_value=_resp(
+            500,
+            json_body={"error": {"code": "internal_error", "message": "DB down"}},
+        ),
     ):
         with pytest.raises(GlideError, match="500.*internal_error.*DB down"):
             c.list_boards()

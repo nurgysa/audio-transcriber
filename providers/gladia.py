@@ -25,10 +25,11 @@ import time
 import requests
 
 from .base import (
-    ProviderError, TranscriptionOptions, TranscriptionProvider,
+    ProviderError,
+    TranscriptionOptions,
+    TranscriptionProvider,
     TranscriptionResult,
 )
-
 
 _API_BASE = "https://api.gladia.io/v2"
 # Polling cadence for transcript completion. 3 s matches the AssemblyAI

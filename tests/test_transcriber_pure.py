@@ -9,11 +9,14 @@ import threading
 import pytest
 
 from transcriber import (
-    TranscriptionCancelled, _assign_speakers_word_level,
-    _build_initial_prompt, _check_cancelled, _find_speaker_by_overlap,
-    _parse_progress_line, _speaker_at_time,
+    TranscriptionCancelled,
+    _assign_speakers_word_level,
+    _build_initial_prompt,
+    _check_cancelled,
+    _find_speaker_by_overlap,
+    _parse_progress_line,
+    _speaker_at_time,
 )
-
 
 # ── _build_initial_prompt ──────────────────────────────────────────
 

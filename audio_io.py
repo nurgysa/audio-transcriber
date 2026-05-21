@@ -17,7 +17,6 @@ import tempfile
 import numpy as np
 import soundfile as sf
 
-
 # Single source of truth for the speech pipeline's sample rate.
 # Whisper, Silero VAD, and pyannote all expect 16 kHz — changing this is
 # not a normal configuration knob, it's a "rewrite the pipeline" decision.
@@ -91,7 +90,7 @@ def ensure_wav(
         raise RuntimeError(
             f"ffmpeg failed to decode {audio_path} (exit {e.returncode}):\n"
             f"{stderr[-1000:]}"
-        )
+        ) from e
     return tmp.name, True
 
 
@@ -261,6 +260,6 @@ def split_wav_into_chunks(
                     pass
             raise RuntimeError(
                 f"ffmpeg failed to split chunk {i} of {wav_path}:\n{stderr[-1000:]}"
-            )
+            ) from e
         chunks.append((chunk_path, float(chunk_start_abs), primary_start_abs))
     return chunks

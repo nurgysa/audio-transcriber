@@ -13,7 +13,7 @@ metadata they track, but the dialog and sender only need the listed fields.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import Protocol
 
 from tasks.schema import Task
 
@@ -27,7 +27,7 @@ class Container:
     """
     id: str
     name: str
-    key: Optional[str] = None
+    key: str | None = None
 
 
 @dataclass(frozen=True)

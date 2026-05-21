@@ -16,8 +16,8 @@ behaviour; Glide is title+description+priority only (assignee/labels are
 manual in editor — no LLM grounding).
 """
 from tasks.backends.base import Container, CreatedIssue, TaskBackend
-from tasks.backends.linear import LinearBackend
 from tasks.backends.glide import GlideBackend
+from tasks.backends.linear import LinearBackend
 
 
 def backend_from_name(name: str, config: dict) -> TaskBackend:

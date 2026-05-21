@@ -19,10 +19,10 @@ import json
 import logging
 import re
 from datetime import date, datetime, timedelta
-from typing import Optional, Protocol
+from typing import Protocol
 
 from tasks.openrouter_client import OpenRouterError
-from tasks.schema import Priority, Task, priority_from_string
+from tasks.schema import Task, priority_from_string
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ def build_prompt(
     transcript: str,
     members: list[dict],
     labels: list[dict],
-    lang: Optional[str],
+    lang: str | None,
 ) -> list[dict]:
     """Construct the system+user message pair fed to OpenRouter."""
     member_lines = "\n".join(
@@ -174,8 +174,8 @@ def parse_and_validate(
 
         # Assignee
         raw_assignee = raw_item.get("assignee_id")
-        assignee_id: Optional[str] = None
-        assignee_name: Optional[str] = None
+        assignee_id: str | None = None
+        assignee_name: str | None = None
         if raw_assignee:
             if raw_assignee in member_ids:
                 assignee_id = raw_assignee
@@ -238,7 +238,7 @@ def extract(
     *,
     transcript: str,
     model: str,
-    lang: Optional[str],
+    lang: str | None,
     openrouter_client: _LLMClient,
     # Phase 6.4.1: extractor no longer fetches team context itself.
     # Caller passes pre-fetched members/labels (Linear path) or empty
@@ -246,10 +246,10 @@ def extract(
     # linear_client params remain for backward compat with Phase 6.0–6.3
     # callers (and the 21 existing tests); when both paths are provided,
     # the explicit members/labels win.
-    members: Optional[list] = None,
-    labels: Optional[list] = None,
-    team_id: Optional[str] = None,
-    linear_client: Optional[_LinearClient] = None,
+    members: list | None = None,
+    labels: list | None = None,
+    team_id: str | None = None,
+    linear_client: _LinearClient | None = None,
 ) -> dict:
     """Run the full extraction. Returns dict with tasks, corrections, usage,
     model echo, raw_response (for debugging / 'Show raw response' UI).
@@ -313,12 +313,12 @@ def extract(
 def extract_one_task(
     *,
     free_text: str,
-    members: Optional[list] = None,
-    labels: Optional[list] = None,
-    lang: Optional[str],
+    members: list | None = None,
+    labels: list | None = None,
+    lang: str | None,
     model: str,
     openrouter_client: _LLMClient,
-) -> Optional[Task]:
+) -> Task | None:
     """Extract ONE task from a short free-form description.
 
     Mirrors ``extract()`` but for a single task — used by the Söyle
@@ -377,7 +377,7 @@ def _strip_codefence(text: str) -> str:
     return m.group(1) if m else (text or "")
 
 
-def _validate_due_date(raw: object) -> Optional[str]:
+def _validate_due_date(raw: object) -> str | None:
     """Accept ISO YYYY-MM-DD strings within tolerance window. Else None."""
     if not isinstance(raw, str) or not raw.strip():
         return None
