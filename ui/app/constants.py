@@ -12,6 +12,7 @@ LANGUAGES = {
     "Казахский": "kk",
     "Русский": "ru",
     "English": "en",
+    "Смешанный (KZ+RU+EN)": "mixed",
 }
 
 MODELS = {
