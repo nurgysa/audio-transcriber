@@ -344,3 +344,28 @@ def test_submit_mixed_uses_multilingual_config():
     assert submitted_body.get("language_detection") is True
     assert submitted_body.get("speech_model") == "universal"
     assert "language_code" not in submitted_body
+
+
+def test_submit_single_language_does_not_leak_mixed_keys():
+    """Regression for the 3-branch refactor: language='ru' must produce a body
+    with the single-language shape (language_code='ru', no language_detection,
+    no speech_model). Mirrors Gladia's test_submit_single_language_unchanged.
+    Guards against the mixed-branch accidentally falling through to the
+    single-language path on a code change.
+    """
+    p = AssemblyAIProvider("test-key")
+
+    submitted_body: dict = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        if json is not None:
+            submitted_body.update(json)
+        return MagicMock(status_code=200, ok=True, json=lambda: {"id": "tr-ru"})
+
+    with patch("providers.assemblyai.requests.post", side_effect=fake_post):
+        p._submit("https://cdn.aai/ru.wav", TranscriptionOptions(language="ru"))
+
+    assert submitted_body.get("language_code") == "ru"
+    # Critical: keys introduced by the mixed branch must not appear here.
+    assert "language_detection" not in submitted_body
+    assert "speech_model" not in submitted_body
