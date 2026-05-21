@@ -55,6 +55,40 @@ def test_initial_prompt_truncates_at_last_comma():
     assert out.endswith(".")
 
 
+# ── _build_initial_prompt with "mixed" sentinel ────────────────────
+
+
+def test_initial_prompt_mixed_includes_trilingual_frame():
+    """`mixed` produces a frame mentioning all three languages so Whisper's
+    decode context biases toward accepting foreign-language inserts."""
+    out = _build_initial_prompt(language="mixed", hotwords_str=None)
+    assert out is not None
+    assert "қазақша" in out
+    assert "русский" in out
+    assert "English" in out
+
+
+def test_initial_prompt_mixed_with_terms_uses_trilingual_label():
+    """When hotwords supplied with `mixed`, the terms label is itself
+    trilingual ("Terms / Терминдер / Терминов")."""
+    out = _build_initial_prompt(language="mixed", hotwords_str="Slack, Нургиса")
+    assert out is not None
+    assert "Slack" in out
+    assert "Нургиса" in out
+    # Trilingual terms label — any one of the three keywords proves
+    # we picked the "mixed" frame, not "Terms:" fallback.
+    assert ("Терминдер" in out) or ("Терминов" in out) or ("Terms" in out)
+
+
+def test_initial_prompt_mixed_no_terms_omits_label():
+    """Frame-only (no hotwords) must not emit a dangling terms label."""
+    out = _build_initial_prompt(language="mixed", hotwords_str=None)
+    assert out is not None
+    assert "Терминдер" not in out
+    assert "Терминов" not in out
+    assert "Terms" not in out
+
+
 # ── _parse_progress_line ───────────────────────────────────────────
 
 

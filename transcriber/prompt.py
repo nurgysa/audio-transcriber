@@ -38,6 +38,13 @@ _PROMPT_FRAMES: dict[str, dict[str, str]] = {
         "prefix": "Transcript of a spoken conversation in English.",
         "terms_label": "Terms mentioned",
     },
+    "mixed": {
+        "prefix": (
+            "Расшифровка трилингвальной (қазақша, русский, English) речи. "
+            "Слова и термины могут переключаться между языками."
+        ),
+        "terms_label": "Терминдер / Терминов / Terms",
+    },
 }
 
 
