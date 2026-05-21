@@ -70,7 +70,7 @@ def test_initial_prompt_mixed_includes_trilingual_frame():
 
 def test_initial_prompt_mixed_with_terms_uses_trilingual_label():
     """When hotwords supplied with `mixed`, the terms label is itself
-    trilingual ("Terms / Терминдер / Терминов")."""
+    trilingual ("Терминдер / Терминов / Terms")."""
     out = _build_initial_prompt(language="mixed", hotwords_str="Slack, Нургиса")
     assert out is not None
     assert "Slack" in out
