@@ -190,3 +190,133 @@ def test_mixed_language_survives_speaker_alignment():
         single_mode_no_words, [(0.0, 1.0, "SPEAKER_00")],
     )
     assert "language" not in out4[0]
+
+
+def test_mixed_passes_language_none_and_vad_filter_false():
+    """Critical: each per-segment transcribe call must pass language=None
+    (so Whisper auto-detects this slice's language) and vad_filter=False
+    (we already filtered upstream)."""
+    t = Transcriber(model_size="tiny")
+    t._model = _make_fake_model([
+        (iter([_make_segment(0.0, 1.0, "x")]), _make_info("kk")),
+        (iter([_make_segment(0.0, 1.0, "y")]), _make_info("ru")),
+    ])
+    fake_samples = np.zeros(16_000 * 10, dtype=np.float32)
+    vad_segments = [
+        {"start": 0, "end": 16_000 * 3},
+        {"start": 16_000 * 5, "end": 16_000 * 8},
+    ]
+
+    with patch("transcriber.load_mono_float32", return_value=(fake_samples, 16_000)), \
+         patch("transcriber.vad_split", return_value=vad_segments):
+        t._decode_chunk_mixed(
+            chunk_path="fake.wav",
+            chunk_start_abs=0.0,
+            primary_start_abs=0.0,
+            initial_prompt="frame",
+            hotwords_str=None,
+            cancel_event=None,
+        )
+
+    # Every transcribe() call must have language=None + vad_filter=False.
+    for call in t._model.transcribe.call_args_list:
+        kwargs = call.kwargs
+        assert kwargs["language"] is None, f"Expected language=None, got {kwargs.get('language')!r}"
+        assert kwargs["vad_filter"] is False, (
+            f"Expected vad_filter=False, got {kwargs.get('vad_filter')!r}"
+        )
+
+
+def test_mixed_passes_trilingual_prompt_through():
+    """The initial_prompt passed to _decode_chunk_mixed must reach every
+    per-segment transcribe call verbatim. In real usage this is the
+    trilingual frame from _build_initial_prompt('mixed', ...)."""
+    t = Transcriber(model_size="tiny")
+    t._model = _make_fake_model([
+        (iter([_make_segment(0.0, 1.0, "x")]), _make_info("ru")),
+        (iter([_make_segment(0.0, 1.0, "y")]), _make_info("kk")),
+    ])
+    fake_samples = np.zeros(16_000 * 10, dtype=np.float32)
+    vad_segments = [
+        {"start": 0, "end": 16_000 * 3},
+        {"start": 16_000 * 5, "end": 16_000 * 8},
+    ]
+
+    expected_prompt = "Расшифровка трилингвальной речи..."
+
+    with patch("transcriber.load_mono_float32", return_value=(fake_samples, 16_000)), \
+         patch("transcriber.vad_split", return_value=vad_segments):
+        t._decode_chunk_mixed(
+            chunk_path="fake.wav",
+            chunk_start_abs=0.0,
+            primary_start_abs=0.0,
+            initial_prompt=expected_prompt,
+            hotwords_str=None,
+            cancel_event=None,
+        )
+
+    for call in t._model.transcribe.call_args_list:
+        assert call.kwargs["initial_prompt"] == expected_prompt
+
+
+def test_mixed_output_segments_carry_language_field():
+    """Each output transcript dict must include a 'language' key set
+    from info.language. This is the metadata downstream consumers
+    (SRT/VTT export, future features) read."""
+    t = Transcriber(model_size="tiny")
+    t._model = _make_fake_model([
+        (iter([_make_segment(0.0, 1.0, "kz text")]), _make_info("kk")),
+        (iter([_make_segment(0.0, 1.0, "ru text")]), _make_info("ru")),
+        (iter([_make_segment(0.0, 1.0, "en text")]), _make_info("en")),
+    ])
+    fake_samples = np.zeros(16_000 * 15, dtype=np.float32)
+    vad_segments = [
+        {"start": 0, "end": 16_000 * 3},
+        {"start": 16_000 * 4, "end": 16_000 * 7},
+        {"start": 16_000 * 9, "end": 16_000 * 12},
+    ]
+
+    with patch("transcriber.load_mono_float32", return_value=(fake_samples, 16_000)), \
+         patch("transcriber.vad_split", return_value=vad_segments):
+        out = t._decode_chunk_mixed(
+            chunk_path="fake.wav",
+            chunk_start_abs=0.0,
+            primary_start_abs=0.0,
+            initial_prompt="frame",
+            hotwords_str=None,
+            cancel_event=None,
+        )
+
+    assert [s["language"] for s in out] == ["kk", "ru", "en"]
+
+
+def test_mixed_segment_timestamps_offset_correctly():
+    """A Whisper-emitted segment at local time t inside VAD slice
+    starting at seg_start_s inside chunk starting at chunk_start_abs
+    must produce abs_start = chunk_start_abs + seg_start_s + t."""
+    t = Transcriber(model_size="tiny")
+    t._model = _make_fake_model([
+        # Whisper sees a 5-second slice and emits a segment from 1.0 to 3.5 within it.
+        (iter([_make_segment(1.0, 3.5, "in slice", words=None)]), _make_info("ru")),
+    ])
+    fake_samples = np.zeros(16_000 * 60, dtype=np.float32)
+    # VAD says slice runs from 10s to 15s within the chunk.
+    vad_segments = [{"start": 16_000 * 10, "end": 16_000 * 15}]
+
+    with patch("transcriber.load_mono_float32", return_value=(fake_samples, 16_000)), \
+         patch("transcriber.vad_split", return_value=vad_segments):
+        out = t._decode_chunk_mixed(
+            chunk_path="fake.wav",
+            chunk_start_abs=900.0,   # chunk starts at 15-min mark in original file
+            primary_start_abs=900.0,
+            initial_prompt="frame",
+            hotwords_str=None,
+            cancel_event=None,
+        )
+
+    assert len(out) == 1
+    seg = out[0]
+    # abs_start = 900 (chunk) + 10 (vad slice start in chunk) + 1.0 (whisper local) = 911.0
+    assert seg["start"] == pytest.approx(911.0, abs=0.01)
+    # abs_end = 900 + 10 + 3.5 = 913.5
+    assert seg["end"] == pytest.approx(913.5, abs=0.01)
