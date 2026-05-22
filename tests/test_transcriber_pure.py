@@ -199,3 +199,46 @@ def test_effective_lang_passes_through_single_codes():
 def test_effective_lang_none_stays_none():
     """None (UI's "Авто-определение") stays None."""
     assert _effective_whisper_language(None) is None
+
+
+# ── Phase 2 regression: language="ru" must NOT trigger the mixed branch ──
+
+
+def test_single_language_skips_vad_pre_pass():
+    """When language is a real ISO code (not 'mixed'), the per-chunk loop
+    must take the single-language branch (_decode_chunk_single). The VAD
+    pre-pass (vad_split) MUST NOT be called — that's reserved for mixed.
+
+    Regression guard against accidentally widening the mixed branch's
+    trigger condition (e.g. `if language is None or language == 'mixed'`).
+    """
+    from unittest.mock import MagicMock, patch
+
+    from transcriber import Transcriber
+
+    t = Transcriber(model_size="tiny")
+    t._model = MagicMock()
+    # Make model.transcribe return one empty segment iter so transcribe()
+    # can complete; we only care about routing.
+    t._model.transcribe.return_value = (iter([]), MagicMock(language="ru"))
+
+    # Patch vad_split as a tripwire — if the mixed branch is wrongly taken,
+    # this would be called.
+    vad_tripwire = MagicMock()
+    with patch("transcriber.vad_split", vad_tripwire), \
+         patch("transcriber.ensure_wav", return_value=("fake.wav", False)), \
+         patch("transcriber.get_duration_s", return_value=30.0), \
+         patch("transcriber.split_wav_into_chunks", return_value=[("fake.wav", 0.0, 0.0)]):
+        # diarize=False so we skip the subprocess + offload code paths
+        t.transcribe(
+            audio_path="fake.wav",
+            language="ru",
+            diarize=False,
+        )
+
+    vad_tripwire.assert_not_called()
+    # And the model.transcribe was called with language="ru" (effective_language
+    # is the same for non-mixed inputs).
+    assert t._model.transcribe.call_count >= 1
+    first_call = t._model.transcribe.call_args_list[0]
+    assert first_call.kwargs.get("language") == "ru"
