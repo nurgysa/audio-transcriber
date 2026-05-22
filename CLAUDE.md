@@ -44,6 +44,17 @@ Whisper-large and pyannote can't be in VRAM at the same time on this card.
 6. **Do not "liberalize" version pins in `requirements.txt`.** Every
    pin is load-bearing — speechbrain/lightning/pyannote/cuDNN
    workarounds depend on exact combinations. README explains why.
+7. **Numpy audio → `model.transcribe()` MUST be 16 kHz mono.**
+   faster-whisper assumes that rate unconditionally for ndarray input;
+   passing a 44.1 / 48 kHz slice silently mangles text and timestamps
+   (no error, just wrong output). The mixed-mode path in
+   `transcriber/__init__.py` enforces this via `ensure_16khz_mono(wav_path)`
+   called UPSTREAM of `load_model()` — running ffmpeg after `load_model`
+   crashes Windows (consequence of invariant #2). When adding any new
+   numpy-into-Whisper code path, gate it the same way.
+   *(`silence_remover.py:81` calls `get_speech_timestamps` on numpy at
+   native sample rate — known latent bug, flagged in PR-A commit
+   `7541f84`'s body, tracked as future cleanup.)*
 
 ## Code conventions
 
@@ -73,7 +84,9 @@ Whisper-large and pyannote can't be in VRAM at the same time on this card.
 Before any commit:
 
 ```bash
-pytest                       # must show green; baseline = 285 tests
+pytest                       # must show green; baseline = 334 tests
+                             # (was 285 pre-code-switching; +30 from Phase 1
+                             # cloud/UI tests, +4 segmenter, +15 mixed-mode)
 python -m ruff check .       # must be clean
 ```
 
@@ -155,8 +168,28 @@ ruff config (line-length=100, target=py310, rules E/W/F/I/B/UP).
   OpenAI Whisper omits the language form field. Deepgram opts out
   (`supports_mixed = False`) because nova-3 lacks Kazakh — runtime guard
   in `Transcriber.transcribe()` raises a Russian `ProviderError` for
-  any provider whose class attribute `supports_mixed = False`. Phase 2
-  (per-segment local language detection) is a deferred separate spec.
+  any provider whose class attribute `supports_mixed = False`.
+- **Code-switching KZ+RU+EN Phase 2** (May 2026): local-Whisper
+  per-segment language detection — true code-switching, not just the
+  prompt-only Phase 1 band-aid. Shipped via PR #28 (PR-A segmenter
+  foundation), PR #29 (PR-B integration: `_decode_chunk_single` +
+  `_decode_chunk_mixed` + `language` field round-trip through
+  `speaker_aligner`), then 3 sequential hotfixes (#30 sampling-rate
+  bug, #31 ordering invariant, #32 cleanup-scope leak) — each Codex-
+  caught post-merge, each fixing one dimension while breaking another.
+  Lessons captured at [feedback_relocating_code_audit_all_invariants.md](memory).
+  Spec + plan at `docs/superpowers/specs/2026-05-22-code-switching-kz-ru-en-phase-2-design.md`
+  and `docs/superpowers/plans/2026-05-22-code-switching-kz-ru-en-phase-2.md`.
+  Architecture: `transcriber/segmenter.py::vad_split()` wraps
+  `faster_whisper.vad.get_speech_timestamps` with language-detection-
+  tuned params (500 ms min speech / silence); `_decode_chunk_mixed`
+  loads the chunk via `load_mono_float32`, VAD-splits it, and runs
+  `model.transcribe(seg_audio, language=None, vad_filter=False, ...)`
+  per region — Whisper's `detect_language` fires per slice. Output
+  dicts carry a new `language` field (preserved through both
+  no-diarize projection AND `_assign_speakers_word_level` /
+  `_flush_word_group` paths). PR-C (manual A/B QA against real
+  meetings + optional VAD tuning) is the deferred quality gate.
 
 ## Don't
 
