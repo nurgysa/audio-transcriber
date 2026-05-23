@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from audio_io import SAMPLE_RATE
+
 
 @dataclass
 class SilenceRemovalResult:
@@ -64,6 +66,30 @@ def remove_silences(samples: np.ndarray, sample_rate: int) -> SilenceRemovalResu
     if samples is None or len(samples) == 0:
         return SilenceRemovalResult(speech_samples=np.array([], dtype=np.float32))
 
+    # Silero VAD's neural model is 16-kHz-only and faster-whisper does NOT
+    # resample non-16k input before feeding the model. Without resampling
+    # here, non-16k WAVs (44.1 / 48 kHz files coming from audio_cutter via
+    # load_mono_float32) would land at wrong formant frequencies for
+    # Silero — detection collapses. resample_to_16khz_mono short-circuits
+    # when sample_rate already equals SAMPLE_RATE so the 16k fast path
+    # pays nothing. See PR #34's discussion for the partial-fix history;
+    # this is the proper fix and supersedes the sampling_rate kwarg
+    # workaround.
+    #
+    # IMPORTANT: we resample for VAD ONLY. The output ``speech_samples``
+    # is trimmed from the ORIGINAL samples (at the caller's native rate)
+    # using TIME-BASED indexing — audio_cutter writes the result with
+    # ``self._sample_rate`` (the caller's rate), and producing a 16 kHz
+    # array would silently change playback speed of the saved file.
+    total_duration_sec = len(samples) / sample_rate
+    if sample_rate != SAMPLE_RATE:
+        from audio_io import resample_to_16khz_mono
+        vad_samples = resample_to_16khz_mono(samples, sample_rate)
+        vad_sample_rate = SAMPLE_RATE
+    else:
+        vad_samples = samples
+        vad_sample_rate = sample_rate
+
     # Lazy import: keeps module import cheap for callers that only need the dataclass.
     # faster-whisper exposes the same Silero VAD that it uses internally for
     # `vad_filter=True` — so we get accurate speech detection with ZERO new deps.
@@ -76,46 +102,46 @@ def remove_silences(samples: np.ndarray, sample_rate: int) -> SilenceRemovalResu
         speech_pad_ms=_SPEECH_PAD_MS,
     )
 
-    # Returns a list of dicts like [{"start": int, "end": int}, ...]
-    # where start/end are sample indices into `samples`.
-    #
-    # Why sampling_rate=sample_rate (CLAUDE.md invariant #7): the kwarg
-    # controls faster-whisper's ms→sample conversions for the speech /
-    # silence threshold logic. Without it, the default 16 kHz means
-    # "500 ms min silence" is computed as 8000 samples, which at 44.1 kHz
-    # input means only ~181 ms actual silence — too permissive. Forwarding
-    # the real rate keeps the thresholds correct in wall time.
-    #
-    # KNOWN LIMITATION: Silero VAD's neural model itself only operates at
-    # 16 kHz; faster-whisper does NOT resample non-16k input before
-    # feeding the model. Detection quality on non-16k audio is poor
-    # regardless of this kwarg — formants land at the wrong frequencies
-    # for Silero's training. Callers that need accurate VAD on non-16k
-    # WAVs should resample to 16 kHz upstream (e.g. via ensure_wav).
-    # Tracked as a separate cleanup.
+    # Returns a list of dicts like [{"start": int, "end": int}, ...] where
+    # start/end are sample indices into ``vad_samples`` (always 16 kHz).
+    # sampling_rate matches that array — explicit even though it equals
+    # the faster-whisper default, so a future refactor that touches the
+    # rate elsewhere still gets the kwarg right.
     speech_timestamps = get_speech_timestamps(
-        samples,
+        vad_samples,
         vad_options,
-        sampling_rate=sample_rate,
+        sampling_rate=vad_sample_rate,
     )
 
-    # Convert speech sample-ranges to seconds for the UI.
+    # Convert VAD sample-ranges to seconds (wall time, rate-independent).
+    # We clamp to the ORIGINAL duration so any tiny ffmpeg-resample length
+    # drift doesn't push speech indices past the end of `samples`.
     speech_ranges_sec = [
-        (ts["start"] / sample_rate, ts["end"] / sample_rate)
+        (
+            min(ts["start"] / vad_sample_rate, total_duration_sec),
+            min(ts["end"] / vad_sample_rate, total_duration_sec),
+        )
         for ts in speech_timestamps
     ]
 
-    # Invert the speech ranges to get silence ranges.
-    # This is the interesting piece — edge cases around leading/trailing
-    # silence, no speech at all, and speech touching the file boundaries.
+    # Invert the speech ranges to get silence ranges. This is the interesting
+    # piece — edge cases around leading/trailing silence, no speech at all,
+    # and speech touching the file boundaries.
     silence_ranges_sec = _compute_silence_ranges(
         speech_ranges_sec,
-        total_duration_sec=len(samples) / sample_rate,
+        total_duration_sec=total_duration_sec,
     )
 
-    # Concatenate only the speech portions of the audio.
-    if speech_timestamps:
-        chunks = [samples[ts["start"]:ts["end"]] for ts in speech_timestamps]
+    # Concatenate the speech portions FROM THE ORIGINAL samples (at the
+    # caller's native rate) using time-based indexing. This preserves the
+    # caller's sample rate end-to-end; audio_cutter's WAV-write step uses
+    # ``self._sample_rate`` and would playback at the wrong speed if we
+    # returned the 16 kHz ``vad_samples`` chunks instead.
+    if speech_ranges_sec:
+        chunks = [
+            samples[int(start * sample_rate):int(end * sample_rate)]
+            for start, end in speech_ranges_sec
+        ]
         speech_samples = np.concatenate(chunks)
     else:
         speech_samples = np.array([], dtype=np.float32)

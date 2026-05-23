@@ -144,6 +144,77 @@ def ensure_16khz_mono(audio_path: str) -> tuple[str, bool]:
     return tmp.name, True
 
 
+def resample_to_16khz_mono(samples: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Resample a numpy mono float32 array to 16 kHz via ffmpeg pipe.
+
+    In-memory sibling of ``ensure_16khz_mono`` (which operates on file
+    paths). Short-circuits with the original array when ``sample_rate ==
+    SAMPLE_RATE`` (no ffmpeg invocation, no copy).
+
+    Used by ``silence_remover`` so Silero VAD always receives 16 kHz input.
+    Silero's neural model is trained on 16 kHz only and ``faster_whisper``
+    does NOT resample non-16k input before feeding the model — formants
+    land at the wrong frequencies and detection quality collapses. The
+    ``sampling_rate`` kwarg on ``get_speech_timestamps`` only fixes
+    ms→sample threshold arithmetic, not the underlying detection (see
+    PR #34 for the partial fix history; this is the proper fix).
+
+    Implementation: pipes raw float32 samples to ffmpeg via stdin (raw
+    PCM ``f32le`` format), reads resampled float32 back from stdout. No
+    temp file, no soundfile encode/decode round-trip — typically <100 ms
+    for a few minutes of audio.
+
+    Args:
+        samples: 1-D float32 mono audio at ``sample_rate``.
+        sample_rate: source sample rate in Hz.
+
+    Returns:
+        1-D float32 array at 16 kHz. Same array (no copy) when the input
+        is already 16 kHz.
+
+    Raises:
+        ValueError: if ``samples`` is not 1-D.
+        RuntimeError: with the tail of ffmpeg's stderr if the subprocess
+            fails.
+    """
+    if sample_rate == SAMPLE_RATE:
+        return samples
+
+    if samples.ndim != 1:
+        raise ValueError(
+            f"resample_to_16khz_mono expects 1-D mono input, "
+            f"got shape {samples.shape}"
+        )
+
+    # Ensure float32 — Python's bytes() conversion below otherwise produces
+    # the wrong byte layout for other dtypes. cheap no-op when already f32.
+    if samples.dtype != np.float32:
+        samples = samples.astype(np.float32, copy=False)
+
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-v", "error",
+                "-f", "f32le", "-ar", str(sample_rate), "-ac", "1",
+                "-i", "pipe:0",
+                "-f", "f32le", "-ar", str(SAMPLE_RATE), "-ac", "1",
+                "pipe:1",
+            ],
+            input=samples.tobytes(),
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+        raise RuntimeError(
+            f"ffmpeg failed to resample numpy samples "
+            f"({sample_rate} Hz → {SAMPLE_RATE} Hz, exit {e.returncode}):\n"
+            f"{stderr[-1000:]}"
+        ) from e
+
+    return np.frombuffer(result.stdout, dtype=np.float32)
+
+
 def load_mono_float32(audio_path: str) -> tuple[np.ndarray, int]:
     """Load an audio file as a 1-D float32 mono numpy array + sample rate.
 

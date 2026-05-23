@@ -24,6 +24,7 @@ from audio_io import (
     ensure_wav,
     get_duration_s,
     load_mono_float32,
+    resample_to_16khz_mono,
     split_wav_into_chunks,
 )
 
@@ -175,3 +176,55 @@ def test_ensure_16khz_mono_resamples_stereo_48k(tmp_path):
                 os.unlink(out_path)
             except OSError:
                 pass
+
+
+# ── resample_to_16khz_mono ────────────────────────────────────────
+
+
+def test_resample_to_16khz_mono_short_circuits_for_16k_input():
+    """16 kHz mono input must be returned as-is (same object, no ffmpeg
+    invocation). This is the dominant fast path — most callers already
+    pre-resampled upstream, and we want zero overhead in that case."""
+    samples = np.zeros(16_000 * 2, dtype=np.float32)  # 2s @ 16k
+    result = resample_to_16khz_mono(samples, sample_rate=16_000)
+    assert result is samples, "Expected identity return (no copy) for 16k input"
+
+
+def test_resample_to_16khz_mono_rejects_multi_dim_input():
+    """ValueError when input is not 1-D. Catches caller mistakes early
+    (e.g. forgetting to channel-average a stereo array before calling)."""
+    stereo = np.zeros((44_100 * 2, 2), dtype=np.float32)
+    with pytest.raises(ValueError, match="1-D mono"):
+        resample_to_16khz_mono(stereo, sample_rate=44_100)
+
+
+@pytest.mark.skipif(
+    not _FFMPEG_AVAILABLE,
+    reason="ffmpeg binary unavailable (CI runners without ffmpeg skip the resample path)",
+)
+def test_resample_to_16khz_mono_resamples_44100_to_16000():
+    """Real ffmpeg pipe: 1 second of 44.1 kHz samples must come back as
+    ~16 000 samples (one second at 16 kHz). Allow ±5 samples of ffmpeg
+    resampler edge-effects."""
+    src = np.zeros(44_100, dtype=np.float32)  # 1 second @ 44.1k
+    result = resample_to_16khz_mono(src, sample_rate=44_100)
+    assert result.dtype == np.float32
+    assert result.ndim == 1
+    assert abs(len(result) - 16_000) <= 5, (
+        f"Resampled length {len(result)} not within ±5 of expected 16000"
+    )
+
+
+@pytest.mark.skipif(
+    not _FFMPEG_AVAILABLE,
+    reason="ffmpeg binary unavailable (CI runners without ffmpeg skip the resample path)",
+)
+def test_resample_to_16khz_mono_resamples_48000_to_16000():
+    """48 kHz → 16 kHz is exact 3:1 downsample. 2 seconds of 48k samples
+    must come back as exactly ~32 000 samples (allow ±5 for edge effects)."""
+    src = np.zeros(48_000 * 2, dtype=np.float32)  # 2 seconds @ 48k
+    result = resample_to_16khz_mono(src, sample_rate=48_000)
+    assert result.dtype == np.float32
+    assert abs(len(result) - 32_000) <= 5, (
+        f"Resampled length {len(result)} not within ±5 of expected 32000"
+    )
