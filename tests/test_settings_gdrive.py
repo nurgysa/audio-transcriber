@@ -1,32 +1,43 @@
 """Phase 7.0 smoke tests for the Settings dialog GDrive section.
 
-Headless — no Tk root spun up. Verifies imports + class surface so
-ImportError or AttributeError regressions surface in CI without
-needing a display.
+Pure source-text checks — no Python imports of `ui.app` or
+`ui.dialogs.settings`. Loading those packages triggers
+`from recorder import Recorder` → `import sounddevice` → requires
+PortAudio at the OS level, which the Linux CI runner doesn't have
+(see tests/test_ui_constants.py header for the same gotcha).
 
-Imports `ui.app` BEFORE `ui.dialogs.settings` to avoid the pre-existing
-circular-import topology between settings.py (which imports
-`ui.app.constants.LANGUAGES`) and `ui.app.dialogs_mixin` (which imports
-SettingsDialog at module level).
+We verify the new method/var names exist in the source files. This
+is weaker than `hasattr(class, name)` (a renamed-but-misplaced
+definition would slip through) but it's the strongest check we can
+run portably without spinning up an X display.
 """
 from __future__ import annotations
 
-import inspect
+import os
 
-import ui.app  # noqa: F401 — load the package first, then settings can resolve
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.dirname(_HERE)
+
+
+def _read(rel_path: str) -> str:
+    with open(os.path.join(_REPO, rel_path), encoding="utf-8") as f:
+        return f.read()
 
 
 def test_settings_dialog_has_gdrive_section_builder():
-    """SettingsDialog must expose _build_gdrive_section as a method."""
-    from ui.dialogs.settings import SettingsDialog
-    assert hasattr(SettingsDialog, "_build_gdrive_section")
-    assert callable(SettingsDialog._build_gdrive_section)
+    """SettingsDialog source must define _build_gdrive_section + register
+    it in the constructor's section-build dispatch."""
+    src = _read(os.path.join("ui", "dialogs", "settings.py"))
+    assert "def _build_gdrive_section(self, parent)" in src
+    assert "self._build_gdrive_section(body)" in src, (
+        "Section method exists but is never called from __init__ dispatch"
+    )
 
 
 def test_settings_dialog_has_gdrive_handlers():
-    """Sign-in/out handlers must exist on SettingsDialog (referenced by
-    button commands in _build_gdrive_section)."""
-    from ui.dialogs.settings import SettingsDialog
+    """All 5 button/state handlers referenced by _build_gdrive_section
+    must be defined as methods on SettingsDialog."""
+    src = _read(os.path.join("ui", "dialogs", "settings.py"))
     for method in (
         "_handle_gdrive_signin",
         "_handle_gdrive_signout",
@@ -34,33 +45,31 @@ def test_settings_dialog_has_gdrive_handlers():
         "_on_gdrive_signin_failure",
         "_refresh_gdrive_button_state",
     ):
-        assert hasattr(SettingsDialog, method), f"Missing {method}"
+        assert f"def {method}(self" in src, f"Missing method definition: {method}"
 
 
 def test_settings_mixin_has_gdrive_callbacks():
-    """App (via SettingsMixin) must expose the change callbacks the
-    Settings dialog button handlers call back into."""
-    from ui.app.settings_mixin import SettingsMixin
+    """SettingsMixin source must expose the 3 Phase 7.0 callbacks
+    the dialog button handlers call back into."""
+    src = _read(os.path.join("ui", "app", "settings_mixin.py"))
     for method in (
         "_compute_gdrive_status_text",
         "_on_gdrive_signed_in",
         "_on_gdrive_signed_out",
     ):
-        assert hasattr(SettingsMixin, method), f"Missing {method}"
-        assert callable(getattr(SettingsMixin, method))
+        assert f"def {method}(self" in src, f"Missing SettingsMixin method: {method}"
 
 
 def test_builder_creates_gdrive_vars():
-    """ui.app.builder source must mention the three GDrive Vars +
-    GDriveAuth instance so they're created during App init. Source
-    inspection is the safest check without a real Tk root."""
-    from ui.app import builder
-    src = inspect.getsource(builder)
+    """ui/app/builder.py must construct the GDriveAuth instance + the
+    three Vars the Settings dialog binds to."""
+    src = _read(os.path.join("ui", "app", "builder.py"))
     for marker in (
-        "_gdrive_auth",
-        "_gdrive_status_var",
-        "_gdrive_account_email_var",
-        "_gdrive_enabled_var",
         "from gdrive.auth import GDriveAuth",
+        "app._gdrive_auth",
+        "app._gdrive_status_var",
+        "app._gdrive_account_email_var",
+        "app._gdrive_enabled_var",
+        "app._gdrive_auth.load_tokens()",
     ):
         assert marker in src, f"builder.py source missing {marker!r}"
