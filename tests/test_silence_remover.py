@@ -11,7 +11,7 @@ The wrapper ``remove_silences`` itself isn't tested here — it's a thin
 adapter around faster_whisper's Silero VAD, which is too heavy for unit
 tests. The interesting logic is the inversion in ``_compute_silence_ranges``.
 """
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -121,42 +121,70 @@ def test_multiple_consecutive_sub_eps_gaps_all_dropped():
     assert silences == []
 
 
-# ── sampling_rate forwarding (regression for the latent VAD bug) ────
+# ── 16 kHz enforcement (full fix for the latent VAD bug) ────────────
+#
+# History: PR #34 forwarded sample_rate to get_speech_timestamps as a
+# partial fix. That made faster-whisper's ms→sample arithmetic correct
+# but didn't help Silero's neural model, which is 16-kHz-only. This file
+# now tests the full fix: silence_remover resamples non-16k input to
+# 16 kHz upstream (via audio_io.resample_to_16khz_mono), then hands the
+# 16k array to VAD.
 
 
-def test_remove_silences_forwards_sampling_rate_to_vad():
-    """Regression for the latent VAD sampling_rate bug flagged in PR-A
-    commit 7541f84. ``remove_silences(samples, sample_rate)`` must
-    forward ``sample_rate`` to ``get_speech_timestamps`` so VAD's
-    internal frame-position math matches the audio it's looking at.
+def test_remove_silences_resamples_non_16k_input_before_vad():
+    """44.1 kHz input must be resampled to 16 kHz before VAD runs.
 
-    Without the fix the VAD function uses its default 16 kHz, so for
-    native-rate audio (e.g. 44.1 kHz from audio_cutter) silence/speech
-    sample indices come back at the wrong frame rate — UI overlays and
-    trimmed output were skewed by ``actual_sr / 16000``.
-
-    Tight unit test via monkeypatch: patch the VAD entry-point at its
-    lazy-import location and assert the kwarg arrives intact. Avoids
-    the integration-grade question of "does Silero detect this synthetic
-    signal" and pins down exactly what the fix promises.
+    The resample helper is patched as a tripwire that asserts the call
+    shape (numpy array + original sample_rate kwarg). Returns synthetic
+    16k samples so the downstream code path executes normally.
     """
-    samples = np.zeros(44_100 * 1, dtype=np.float32)  # 1 second @ 44.1k
-    captured_kwargs = {}
+    samples = np.zeros(44_100, dtype=np.float32)  # 1 second @ 44.1k
+    resampled = np.zeros(16_000, dtype=np.float32)  # what the helper would return
+
+    resample_mock = MagicMock(return_value=resampled)
+    captured_vad_kwargs: dict = {}
 
     def fake_get_speech_timestamps(audio, vad_options=None, **kwargs):
-        captured_kwargs.update(kwargs)
-        return []  # no speech needed; we only care about the call shape
+        captured_vad_kwargs.update(kwargs)
+        return []
 
-    # Patch the symbol at its import site — silence_remover does a lazy
-    # `from faster_whisper.vad import ... get_speech_timestamps` inside
-    # the function, so the patch target is the source module, not
-    # silence_remover.
-    with patch(
-        "faster_whisper.vad.get_speech_timestamps",
-        side_effect=fake_get_speech_timestamps,
-    ):
+    with patch("audio_io.resample_to_16khz_mono", resample_mock), \
+         patch(
+             "faster_whisper.vad.get_speech_timestamps",
+             side_effect=fake_get_speech_timestamps,
+         ):
         remove_silences(samples, sample_rate=44_100)
 
-    assert captured_kwargs.get("sampling_rate") == 44_100, (
-        f"sample_rate not forwarded to VAD. Got kwargs: {captured_kwargs}"
+    # The resample helper was called once with the original (numpy, 44100) pair.
+    assert resample_mock.call_count == 1, (
+        f"Expected exactly 1 resample call, got {resample_mock.call_count}"
     )
+    call_args = resample_mock.call_args
+    assert call_args.args[1] == 44_100, (
+        f"resample called with wrong sample_rate: {call_args.args[1]}"
+    )
+    # VAD then ran at 16 kHz (post-resample), not at 44.1.
+    assert captured_vad_kwargs.get("sampling_rate") == 16_000, (
+        f"VAD didn't receive 16k sampling_rate: {captured_vad_kwargs}"
+    )
+
+
+def test_remove_silences_skips_resample_for_16k_input():
+    """16 kHz input must NOT trigger the resample helper. This is the
+    fast path — the dominant case in production where ensure_wav or a
+    16k WAV upstream has already produced the right rate.
+
+    Tripwire pattern: patch resample helper as MagicMock; if it's called,
+    the assertion at the end fails.
+    """
+    samples = np.zeros(16_000, dtype=np.float32)  # 1 second @ 16k
+    resample_tripwire = MagicMock()
+
+    with patch("audio_io.resample_to_16khz_mono", resample_tripwire), \
+         patch(
+             "faster_whisper.vad.get_speech_timestamps",
+             return_value=[],
+         ):
+        remove_silences(samples, sample_rate=16_000)
+
+    resample_tripwire.assert_not_called()
