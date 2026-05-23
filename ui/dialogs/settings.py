@@ -102,6 +102,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self._build_openrouter_section(body)
         self._build_linear_section(body)
         self._build_glide_section(body)
+        self._build_gdrive_section(body)
 
         # Wire reactive warning: fires whenever language or cloud provider
         # changes so the label stays in sync without requiring a Save button.
@@ -779,3 +780,99 @@ class SettingsDialog(ctk.CTkToplevel):
             })
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ── Google Drive section (Phase 7.0) ──────────────────────────────
+
+    def _build_gdrive_section(self, parent) -> None:
+        """Google Drive backup: sign-in/out + status badge.
+
+        Phase 7.0 surface only — no backup-now button (7.1), no
+        frequency dropdown (7.3), no audio opt-in (7.4). Adding those
+        widgets later just extends this method.
+
+        Threading: sign_in() blocks while the browser is open; we run
+        it in a daemon thread and route the result back to the Tk loop
+        via `self.after(0, ...)` so widget updates happen on the main
+        thread. Mirrors the _validate_openrouter pattern.
+        """
+        section = self._section_card(parent, "Google Drive", row=9)
+
+        # Status row — badge bound to the App's _gdrive_status_var.
+        label(section, "Статус").grid(
+            row=0, column=0, padx=(4, 8), pady=6, sticky="w",
+        )
+        self._gdrive_status_label = ctk.CTkLabel(
+            section,
+            textvariable=self._parent._gdrive_status_var,
+            anchor="w",
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(family=FONT, size=12),
+        )
+        self._gdrive_status_label.grid(
+            row=0, column=1, columnspan=2, padx=4, pady=6, sticky="ew",
+        )
+
+        # Action row — Войти + Выйти (one of them disabled at any time).
+        self._gdrive_signin_btn = primary_button(
+            section, text="Войти через Google",
+            command=self._handle_gdrive_signin, width=180,
+        )
+        self._gdrive_signin_btn.grid(
+            row=1, column=0, columnspan=2, padx=4, pady=6, sticky="w",
+        )
+
+        self._gdrive_signout_btn = tonal_button(
+            section, text="Выйти",
+            command=self._handle_gdrive_signout, width=100,
+        )
+        self._gdrive_signout_btn.grid(row=1, column=2, padx=(4, 4), pady=6, sticky="e")
+
+        # Initial button enabled-state reflects current sign-in state.
+        self._refresh_gdrive_button_state()
+
+    def _refresh_gdrive_button_state(self) -> None:
+        """Войти is enabled iff not signed in; Выйти iff signed in. Called
+        after every state change so the UI matches the GDriveAuth state."""
+        if self._parent._gdrive_auth.is_signed_in():
+            self._gdrive_signin_btn.configure(state="disabled")
+            self._gdrive_signout_btn.configure(state="normal")
+        else:
+            self._gdrive_signin_btn.configure(state="normal")
+            self._gdrive_signout_btn.configure(state="disabled")
+
+    def _handle_gdrive_signin(self) -> None:
+        """Войти clicked — spawn a worker that runs sign_in() (blocks on
+        browser). Disable the button immediately so double-click can't
+        spawn two flows."""
+        self._gdrive_signin_btn.configure(state="disabled", text="Открываю браузер...")
+
+        def worker():
+            try:
+                self._parent._gdrive_auth.sign_in()
+                self.after(0, self._on_gdrive_signin_success)
+            except Exception as e:   # any OAuth failure: network, user cancel, GCP misconfig
+                _logger.exception("GDrive sign-in failed: %s", e)
+                # Hoist str(e) into a plain local before the lambda — `e`
+                # is del'd at except-block exit (Python scoping rule), so
+                # `lambda: ...str(e)...` would NameError on the main thread.
+                error_msg = str(e)
+                self.after(0, lambda: self._on_gdrive_signin_failure(error_msg))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_gdrive_signin_success(self) -> None:
+        """Worker → main thread: refresh state + restore button text."""
+        self._parent._on_gdrive_signed_in()
+        self._gdrive_signin_btn.configure(text="Войти через Google")
+        self._refresh_gdrive_button_state()
+
+    def _on_gdrive_signin_failure(self, error_msg: str) -> None:
+        """Worker → main thread: restore button + show error in status."""
+        self._gdrive_signin_btn.configure(text="Войти через Google")
+        self._parent._gdrive_status_var.set(f"⚠ Ошибка входа: {error_msg[:80]}")
+        self._refresh_gdrive_button_state()
+
+    def _handle_gdrive_signout(self) -> None:
+        """Выйти clicked — sync; sign_out() is fast (file delete)."""
+        self._parent._on_gdrive_signed_out()
+        self._refresh_gdrive_button_state()

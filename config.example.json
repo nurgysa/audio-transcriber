@@ -16,5 +16,9 @@
   "linear_enabled": true,
   "glide_api_key": "",
   "glide_enabled": true,
+  "gdrive_enabled": false,
+  "gdrive_account_email": "",
+  "gdrive_last_backup": "",
+  "gdrive_backup_frequency": "off",
   "appearance_mode": "Системная"
 }
