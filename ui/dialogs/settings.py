@@ -852,7 +852,11 @@ class SettingsDialog(ctk.CTkToplevel):
                 self.after(0, self._on_gdrive_signin_success)
             except Exception as e:   # any OAuth failure: network, user cancel, GCP misconfig
                 _logger.exception("GDrive sign-in failed: %s", e)
-                self.after(0, lambda: self._on_gdrive_signin_failure(str(e)))
+                # Hoist str(e) into a plain local before the lambda — `e`
+                # is del'd at except-block exit (Python scoping rule), so
+                # `lambda: ...str(e)...` would NameError on the main thread.
+                error_msg = str(e)
+                self.after(0, lambda: self._on_gdrive_signin_failure(error_msg))
 
         threading.Thread(target=worker, daemon=True).start()
 
