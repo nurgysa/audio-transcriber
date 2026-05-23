@@ -176,7 +176,7 @@ ruff config (line-length=100, target=py310, rules E/W/F/I/B/UP).
   (`supports_mixed = False`) because nova-3 lacks Kazakh — runtime guard
   in `Transcriber.transcribe()` raises a Russian `ProviderError` for
   any provider whose class attribute `supports_mixed = False`.
-- **Code-switching KZ+RU+EN Phase 2** (May 2026): local-Whisper
+- **Code-switching KZ+RU+EN Phase 2** (May 2026, closed): local-Whisper
   per-segment language detection — true code-switching, not just the
   prompt-only Phase 1 band-aid. Shipped via PR #28 (PR-A segmenter
   foundation), PR #29 (PR-B integration: `_decode_chunk_single` +
@@ -184,7 +184,11 @@ ruff config (line-length=100, target=py310, rules E/W/F/I/B/UP).
   `speaker_aligner`), then 3 sequential hotfixes (#30 sampling-rate
   bug, #31 ordering invariant, #32 cleanup-scope leak) — each Codex-
   caught post-merge, each fixing one dimension while breaking another.
-  Lessons captured at [feedback_relocating_code_audit_all_invariants.md](memory).
+  Two follow-up VAD fixes then hardened the invariant-#8 surface
+  (#34 forwards `sampling_rate` to `get_speech_timestamps`, #35
+  resamples non-16k input in `silence_remover`; #36 docs-only closed
+  the latent-bug note and codified invariant #8). Lessons captured at
+  [feedback_relocating_code_audit_all_invariants.md](memory).
   Spec + plan at `docs/superpowers/specs/2026-05-22-code-switching-kz-ru-en-phase-2-design.md`
   and `docs/superpowers/plans/2026-05-22-code-switching-kz-ru-en-phase-2.md`.
   Architecture: `transcriber/segmenter.py::vad_split()` wraps
@@ -195,8 +199,10 @@ ruff config (line-length=100, target=py310, rules E/W/F/I/B/UP).
   per region — Whisper's `detect_language` fires per slice. Output
   dicts carry a new `language` field (preserved through both
   no-diarize projection AND `_assign_speakers_word_level` /
-  `_flush_word_group` paths). PR-C (manual A/B QA against real
-  meetings + optional VAD tuning) is the deferred quality gate.
+  `_flush_word_group` paths). The PR-C formal A/B QA pass was
+  deferred — quality signal came instead from the hotfix cycle on
+  real workloads. If regression suspected later, Phase 1 baseline
+  commit = `79071ff` (last commit before PR-A).
 
 ## Don't
 

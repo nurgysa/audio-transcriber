@@ -1300,12 +1300,21 @@ Pick a local directory OUTSIDE the repo (e.g. `~/Documents/qa_audio/`). **Do not
 
 ---
 
-### Task C.2: Run Phase 1 baseline on `main`
+### Task C.2: Run Phase 1 baseline on the pre-Phase-2 commit
 
-- [ ] **Step 1: Check out main**
+> **Plan-staleness note (added 2026-05-23):** This plan was originally
+> written assuming PR-C would run immediately after PR-B merged, so
+> "Phase 1 baseline" lived on `main` only briefly. By the time anyone
+> runs this section, `main` IS Phase 2 (PR-A `53a05fb` + PR-B `c45a89a`
+> have shipped, plus the #30/#31/#32/#34/#35 hotfix chain). For an
+> honest A/B, Phase 1 baseline must come from a commit BEFORE PR-A.
+> The cleanest reference is `79071ff` — the docs-only spec/plan PR #27.
+
+- [ ] **Step 1: Check out the Phase 1 baseline commit**
 
 ```bash
-git checkout main && git pull --ff-only origin main
+git checkout 79071ff   # Last commit before PR-A (#28) shipped any Phase 2 code.
+                       # Detached HEAD is fine — this is read-only QA.
 ```
 
 - [ ] **Step 2: For each recording, run with `Смешанный (KZ+RU+EN)` and capture the result**
