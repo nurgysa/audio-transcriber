@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+from google.auth.exceptions import RefreshError
+from google.auth.transport.requests import Request
 
 logger = logging.getLogger(__name__)
 
@@ -178,3 +180,31 @@ class GDriveAuth:
             pass   # Already gone — fine
         except OSError as e:
             logger.warning("Could not delete token file %s: %s", self.token_path, e)
+
+    def ensure_valid_credentials(self) -> None:
+        """Refresh the access token if it's expired. No-op if still valid,
+        no-op if not signed in.
+
+        On refresh failure (revoked token, network down, refresh token
+        expired): we drop the bad credentials via sign_out() and re-raise
+        RefreshError so callers can show the user a "please sign in
+        again" message. This avoids the alternative pathology where
+        every subsequent API call fails with confusing errors against
+        a half-dead Credentials object.
+        """
+        if self._credentials is None:
+            return
+        if self._credentials.valid:
+            return
+        if not self._credentials.expired or not self._credentials.refresh_token:
+            return
+        try:
+            self._credentials.refresh(Request())
+        except RefreshError:
+            # Auth is gone — drop everything and let the caller re-prompt.
+            logger.warning("GDrive token refresh failed; signing out")
+            self.sign_out()
+            raise
+        # Refresh succeeded — persist the new access token to disk so the
+        # next process start doesn't have to refresh again.
+        self.save_tokens()

@@ -131,3 +131,74 @@ def test_sign_out_when_not_signed_in_is_silent(tmp_path):
     auth = GDriveAuth(token_path=tmp_path / "nope.json")
     auth.sign_out()   # Must not raise
     assert auth.is_signed_in() is False
+
+
+def test_ensure_valid_credentials_refreshes_expired_token(tmp_path):
+    """When the cached access token is expired but the refresh token is
+    still valid, ensure_valid_credentials() calls Credentials.refresh()
+    and persists the new token to disk."""
+    token_file = tmp_path / "gdrive-token.json"
+    auth = GDriveAuth(token_path=token_file)
+
+    fake_creds = MagicMock()
+    fake_creds.valid = False
+    fake_creds.expired = True
+    fake_creds.refresh_token = "refresh-still-good"
+    fake_creds.to_json.return_value = '{"token": "newly-refreshed"}'
+    auth._credentials = fake_creds
+    auth._account_email = "user@example.com"
+
+    with patch("gdrive.auth.Request") as mock_request_cls:  # noqa: F841
+        auth.ensure_valid_credentials()
+
+    fake_creds.refresh.assert_called_once()
+    # Refresh result should land on disk.
+    assert token_file.exists()
+    on_disk = json.loads(token_file.read_text())
+    assert on_disk["token"] == "newly-refreshed"
+
+
+def test_ensure_valid_credentials_signs_out_when_refresh_fails(tmp_path):
+    """When refresh() raises (revoked token, network down, etc.), the
+    UX choice is: drop the bad credentials, force a re-sign-in on next
+    use. Better than leaving stale state that fails every subsequent
+    API call with a confusing error."""
+    from google.auth.exceptions import RefreshError
+
+    token_file = tmp_path / "gdrive-token.json"
+    token_file.write_text('{"placeholder": true}')   # so sign_out has something to delete
+
+    auth = GDriveAuth(token_path=token_file)
+    fake_creds = MagicMock()
+    fake_creds.valid = False
+    fake_creds.expired = True
+    fake_creds.refresh_token = "revoked-by-user"
+    fake_creds.refresh.side_effect = RefreshError("Token has been revoked")
+    auth._credentials = fake_creds
+    auth._account_email = "revoked@example.com"
+
+    with patch("gdrive.auth.Request"):
+        with pytest.raises(RefreshError):
+            auth.ensure_valid_credentials()
+
+    # Refresh failure → instance is signed out, token file gone.
+    assert auth.is_signed_in() is False
+    assert auth.get_account_email() is None
+    assert not token_file.exists()
+
+
+def test_ensure_valid_credentials_noop_when_already_valid(tmp_path):
+    """If the credentials are still valid, ensure_valid_credentials() must
+    not call refresh() and must not touch the disk."""
+    token_file = tmp_path / "gdrive-token.json"
+    auth = GDriveAuth(token_path=token_file)
+
+    fake_creds = MagicMock()
+    fake_creds.valid = True
+    fake_creds.expired = False
+    auth._credentials = fake_creds
+
+    auth.ensure_valid_credentials()
+
+    fake_creds.refresh.assert_not_called()
+    assert not token_file.exists(), "No save should have happened"
