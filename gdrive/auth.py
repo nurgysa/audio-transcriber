@@ -142,3 +142,39 @@ class GDriveAuth:
         except requests.RequestException as e:
             logger.warning("Could not fetch GDrive account email: %s", e)
             return None
+
+    def load_tokens(self) -> bool:
+        """Restore credentials from token_path. Returns True on success,
+        False if the file doesn't exist (first-run state). Raises only on
+        a malformed token file — that's bug territory, not normal flow.
+
+        Does NOT trigger a refresh. The first API call that needs a fresh
+        token will use Credentials.refresh() internally via the Google
+        client libraries.
+        """
+        # Lazy import — same reason as sign_in().
+        from google.oauth2.credentials import Credentials
+
+        if not self.token_path.exists():
+            return False
+        raw = json.loads(self.token_path.read_text())
+        # account_email is our addition; google-auth's Credentials doesn't
+        # know about it. Pop before handing the rest to Credentials.
+        self._account_email = raw.pop("account_email", None)
+        self._credentials = Credentials.from_authorized_user_info(raw, SCOPES)
+        return True
+
+    def sign_out(self) -> None:
+        """Drop credentials from memory and delete the token file.
+
+        Idempotent: calling on a fresh / already-signed-out instance is
+        a no-op (no FileNotFoundError, no AttributeError).
+        """
+        self._credentials = None
+        self._account_email = None
+        try:
+            self.token_path.unlink()
+        except FileNotFoundError:
+            pass   # Already gone — fine
+        except OSError as e:
+            logger.warning("Could not delete token file %s: %s", self.token_path, e)

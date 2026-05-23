@@ -71,3 +71,63 @@ def test_sign_in_runs_flow_and_caches_credentials(tmp_path, monkeypatch):
     assert on_disk["token"] == "fake-access"
     assert on_disk["refresh_token"] == "fake-refresh"
     assert on_disk["account_email"] == "tester@example.com"
+
+
+def test_load_tokens_returns_false_when_file_missing(tmp_path):
+    """If the token file doesn't exist, load_tokens() returns False and
+    leaves the instance unsigned. Not an error — this is the first-run
+    state."""
+    auth = GDriveAuth(token_path=tmp_path / "nope.json")
+    assert auth.load_tokens() is False
+    assert auth.is_signed_in() is False
+
+
+def test_load_tokens_restores_credentials_and_email(tmp_path):
+    """A token file written by save_tokens() must round-trip through
+    load_tokens() — credentials become available and account_email is
+    populated. Critical for surviving an app restart without re-prompting."""
+    token_file = tmp_path / "gdrive-token.json"
+    token_file.write_text(json.dumps({
+        "token": "fake-access",
+        "refresh_token": "fake-refresh",
+        "client_id": "fake-client",
+        "client_secret": "fake-secret",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "scopes": ["https://www.googleapis.com/auth/drive.file"],
+        "account_email": "rebooted@example.com",
+    }))
+
+    auth = GDriveAuth(token_path=token_file)
+    assert auth.load_tokens() is True
+    assert auth.is_signed_in() is True
+    assert auth.get_account_email() == "rebooted@example.com"
+
+
+def test_sign_out_clears_state_and_removes_file(tmp_path):
+    """sign_out() must (a) drop the credentials from memory, (b) drop
+    the email, and (c) delete the token file from disk. After sign_out,
+    is_signed_in() returns False."""
+    token_file = tmp_path / "gdrive-token.json"
+    token_file.write_text(json.dumps({
+        "token": "x", "refresh_token": "y", "client_id": "a",
+        "client_secret": "b", "token_uri": "z",
+        "scopes": ["https://www.googleapis.com/auth/drive.file"],
+        "account_email": "to-be-removed@example.com",
+    }))
+
+    auth = GDriveAuth(token_path=token_file)
+    auth.load_tokens()
+    assert auth.is_signed_in() is True
+
+    auth.sign_out()
+    assert auth.is_signed_in() is False
+    assert auth.get_account_email() is None
+    assert not token_file.exists(), "Token file should be deleted"
+
+
+def test_sign_out_when_not_signed_in_is_silent(tmp_path):
+    """sign_out() on a fresh instance must not raise — this is the
+    'click Выйти after already being signed out' edge case."""
+    auth = GDriveAuth(token_path=tmp_path / "nope.json")
+    auth.sign_out()   # Must not raise
+    assert auth.is_signed_in() is False
