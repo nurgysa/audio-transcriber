@@ -192,7 +192,12 @@ def test_upload_file_calls_files_create_with_media_and_metadata(tmp_path):
     # MediaFileUpload was constructed with the local path + mime type.
     fake_media_cls.assert_called_once()
     media_args = fake_media_cls.call_args
-    assert media_args.args[0] == str(local_file) or media_args.kwargs.get("filename") == str(local_file)
+    expected_path = str(local_file)
+    assert (
+        media_args.args[0] == expected_path
+        or media_args.kwargs.get("filename") == expected_path
+    )
     assert media_args.kwargs.get("mimetype") == JSON_MIME
     # The media kwarg got passed to create().
-    assert fake_service.files.return_value.create.call_args.kwargs["media_body"] is fake_media_instance
+    create_kwargs = fake_service.files.return_value.create.call_args.kwargs
+    assert create_kwargs["media_body"] is fake_media_instance
