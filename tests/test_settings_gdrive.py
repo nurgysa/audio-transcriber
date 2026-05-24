@@ -98,3 +98,40 @@ def test_settings_mixin_has_backup_success_callback():
     # Sanity: it must persist both keys.
     assert '"gdrive_root_folder_id"' in src
     assert '"gdrive_last_backup"' in src
+
+
+def test_backup_failure_handler_syncs_signed_out_state():
+    """Regression for Codex P2 on PR #48: when run_backup raises
+    inside the worker, _on_gdrive_backup_failure must detect if
+    GDriveAuth has been signed-out internally (RefreshError path
+    inside ensure_valid_credentials → sign_out) and call
+    _on_gdrive_signed_out so the top status badge + persisted
+    config keys reflect the revoked state.
+
+    Without the fix, the user sees "✗ Token revoked" in the backup
+    status row but the top badge still shows "✓ Подключён к
+    email@example.com" and gdrive_enabled stays True in config.json.
+    """
+    src = _read(os.path.join("ui", "dialogs", "settings.py"))
+
+    # Slice the failure handler body so we don't match unrelated
+    # is_signed_in() calls elsewhere in the file (e.g. inside
+    # _refresh_gdrive_button_state).
+    marker = "def _on_gdrive_backup_failure(self"
+    start = src.index(marker)
+    # Take everything until the next `def ` at the same indentation,
+    # OR a fixed 1500-char window — whichever comes first. Failure
+    # handler body is ~25 lines so 1500 chars is generous.
+    body_window = src[start:start + 1500]
+
+    assert "is_signed_in()" in body_window, (
+        "_on_gdrive_backup_failure must check is_signed_in() to detect "
+        "auth revocation inside run_backup"
+    )
+    assert "_on_gdrive_signed_out()" in body_window, (
+        "_on_gdrive_backup_failure must call _on_gdrive_signed_out() "
+        "to sync UI/config when ensure_valid_credentials triggered "
+        "an internal sign_out"
+    )
+    # Codex-P2-fix marker comment must be present (anti-revert pin).
+    assert "Codex P2 on PR #48" in body_window
