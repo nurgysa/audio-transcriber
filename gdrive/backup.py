@@ -25,9 +25,13 @@ from __future__ import annotations
 
 import copy
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+MANIFEST_VERSION = 1
 
 
 # String written in place of every redacted secret. Matches the spec's
@@ -109,3 +113,60 @@ def zip_history(src_dir, out_zip) -> None:
                 continue
             arcname = path.relative_to(src).as_posix()
             zf.write(path, arcname=arcname)
+
+
+def _iso_timestamp() -> str:
+    """Current UTC time formatted as the spec's folder-name (line 86):
+    ``2026-04-30T12-30-00``. The two ``:`` separators inside the time
+    portion are replaced with ``-`` for Windows-filename safety (the
+    folder is created in Drive but the same string appears in local
+    paths during Phase 7.2 restore extraction).
+    """
+    now = datetime.now(timezone.utc)
+    # isoformat() with timespec='seconds' → '2026-04-30T12:30:00+00:00'
+    # We want '2026-04-30T12-30-00' — strip tz, replace colons.
+    raw = now.strftime("%Y-%m-%dT%H:%M:%S")
+    return raw.replace(":", "-")
+
+
+def build_manifest(
+    *,
+    files: dict[str, Any],
+    transcripts_count: int,
+    app_version: str,
+    host: str,
+    created_at: str,
+    audio_included: bool = False,
+) -> dict[str, Any]:
+    """Build the manifest dict that ships alongside the payload files.
+
+    Schema per spec line 94-108. SHA-256 + byte-size are computed
+    per file by streaming (chunked reads — works for arbitrarily
+    large payloads, though Phase 7.1's are tiny).
+
+    audio_included defaults to False (text-only is Phase 7.1's scope);
+    Phase 7.4's audio opt-in passes True.
+    """
+    import hashlib
+    from pathlib import Path
+
+    files_meta = {}
+    for arcname, local in files.items():
+        path = Path(local)
+        sha = hashlib.sha256()
+        size = 0
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(64 * 1024), b""):
+                sha.update(chunk)
+                size += len(chunk)
+        files_meta[arcname] = {"size": size, "sha256": sha.hexdigest()}
+
+    return {
+        "version": MANIFEST_VERSION,
+        "created_at": created_at,
+        "app_version": app_version,
+        "host": host,
+        "files": files_meta,
+        "transcripts_count": transcripts_count,
+        "audio_included": audio_included,
+    }

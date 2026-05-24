@@ -11,11 +11,13 @@ import json
 import zipfile
 from unittest.mock import MagicMock, patch
 
-from gdrive.backup import REDACTED_KEYS, REDACTION_PLACEHOLDER, redact_config, zip_history
-
-# build_manifest gets imported INSIDE its tests below — during the
-# B.3 TDD slice it doesn't exist yet, so a top-level import would
-# break test collection for the B.1 (redact) + B.2 (zip_history) tests.
+from gdrive.backup import (
+    REDACTED_KEYS,
+    REDACTION_PLACEHOLDER,
+    build_manifest,
+    redact_config,
+    zip_history,
+)
 
 
 def test_redact_config_replaces_listed_keys_with_placeholder():
@@ -120,3 +122,76 @@ def test_zip_history_empty_directory_produces_empty_archive(tmp_path):
     assert out_zip.exists()
     with zipfile.ZipFile(out_zip) as zf:
         assert zf.namelist() == []
+
+
+def test_iso_timestamp_format_matches_spec(monkeypatch):
+    """_iso_timestamp returns the folder-name-safe ISO 8601 used in
+    the spec's example (`2026-04-30T12-30-00`). The two : separators
+    between hours/minutes/seconds are replaced with `-` because Drive
+    folder names tolerate them but Windows paths don't (matters for
+    restore flow's local extraction in Phase 7.2)."""
+    import datetime as dt
+
+    from gdrive.backup import _iso_timestamp
+
+    class _FakeDateTime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 5, 23, 22, 30, 45, tzinfo=tz)
+
+    monkeypatch.setattr("gdrive.backup.datetime", _FakeDateTime)
+    assert _iso_timestamp() == "2026-05-23T22-30-45"
+
+
+def test_build_manifest_computes_sha256_and_size_for_each_file(tmp_path):
+    """build_manifest computes SHA-256 + byte-size for each file in
+    the files dict, plus carries through the structural fields
+    (version, created_at, app_version, host, transcripts_count,
+    audio_included)."""
+    config_file = tmp_path / "config.json"
+    config_file.write_bytes(b'{"language": "ru"}')   # 18 bytes
+    history_zip = tmp_path / "history.zip"
+    history_zip.write_bytes(b"PK\x03\x04" + b"\x00" * 100)  # 104 bytes
+
+    expected_config_sha = hashlib.sha256(b'{"language": "ru"}').hexdigest()
+    expected_zip_sha = hashlib.sha256(b"PK\x03\x04" + b"\x00" * 100).hexdigest()
+
+    manifest = build_manifest(
+        files={"config.json": config_file, "history.zip": history_zip},
+        transcripts_count=42,
+        app_version="phase-7.1",
+        host="TEST-HOST",
+        created_at="2026-05-23T22-30-45",
+    )
+
+    assert manifest["version"] == 1
+    assert manifest["created_at"] == "2026-05-23T22-30-45"
+    assert manifest["app_version"] == "phase-7.1"
+    assert manifest["host"] == "TEST-HOST"
+    assert manifest["transcripts_count"] == 42
+    assert manifest["audio_included"] is False
+    assert manifest["files"] == {
+        "config.json": {"size": 18, "sha256": expected_config_sha},
+        "history.zip": {"size": 104, "sha256": expected_zip_sha},
+    }
+
+
+def test_build_manifest_serializable_to_json(tmp_path):
+    """The returned dict must round-trip through json.dumps/loads with
+    no special encoders. Smoke for "did I use a Path object where I
+    should have str'd it" kinds of bugs."""
+    config_file = tmp_path / "config.json"
+    config_file.write_text("{}")
+    history_zip = tmp_path / "history.zip"
+    history_zip.write_bytes(b"PK")
+
+    manifest = build_manifest(
+        files={"config.json": config_file, "history.zip": history_zip},
+        transcripts_count=0,
+        app_version="phase-7.1",
+        host="HOST",
+        created_at="2026-05-23T22-30-45",
+    )
+
+    serialised = json.dumps(manifest)
+    assert json.loads(serialised) == manifest
