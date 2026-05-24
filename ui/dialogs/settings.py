@@ -916,6 +916,7 @@ class SettingsDialog(ctk.CTkToplevel):
                 # Lazy imports — keep dialog construction independent
                 # of gdrive.backup's googleapiclient import chain.
                 import tempfile
+
                 from gdrive.backup import run_backup
 
                 # Status callback marshals each status string back to
