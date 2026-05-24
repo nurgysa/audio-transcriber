@@ -121,3 +121,36 @@ class DriveClient:
         if existing is not None:
             return existing
         return self.create_folder(name, parent_id=parent_id)
+
+    def upload_file(
+        self,
+        local_path,                   # pathlib.Path or str
+        drive_name: str,
+        parent_id: str,
+        mime_type: str = "application/octet-stream",
+    ) -> str:
+        """Upload ``local_path`` to Drive under ``parent_id`` with name
+        ``drive_name``. Returns the new Drive file id.
+
+        Uses MediaFileUpload (single-shot for files <5 MB, automatically
+        resumable above). Phase 7.1's payloads are tiny (~1 MB total
+        across manifest + config + history zip), so this is effectively
+        a single-shot upload — but the same primitive will scale up
+        cleanly if Phase 7.4 (audio opt-in) lands.
+        """
+        # Lazy import to keep cold-start light. MediaFileUpload lives in
+        # googleapiclient.http, not .discovery.
+        from googleapiclient.http import MediaFileUpload
+
+        body = {
+            "name": drive_name,
+            "parents": [parent_id],
+        }
+        media = MediaFileUpload(str(local_path), mimetype=mime_type)
+        service = self._get_service()
+        resp = service.files().create(
+            body=body,
+            media_body=media,
+            fields="id",
+        ).execute()
+        return resp["id"]

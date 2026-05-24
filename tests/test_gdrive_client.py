@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from gdrive.client import FOLDER_MIME, DriveClient
+from gdrive.client import FOLDER_MIME, JSON_MIME, DriveClient
 
 
 def test_constructor_takes_credentials_and_stores_them():
@@ -152,3 +152,47 @@ def test_find_or_create_folder_creates_when_no_match():
 
     assert result == "freshly-made-id"
     fake_service.files.return_value.create.assert_called_once()
+
+
+def test_upload_file_calls_files_create_with_media_and_metadata(tmp_path):
+    """upload_file builds the right metadata body, wraps the local
+    file in a MediaFileUpload, and returns the new file id."""
+    # Real file on disk so MediaFileUpload's path validation passes.
+    local_file = tmp_path / "manifest.json"
+    local_file.write_text('{"version": 1}')
+
+    fake_creds = MagicMock()
+    fake_service = MagicMock()
+    fake_service.files.return_value.create.return_value.execute.return_value = {
+        "id": "uploaded-file-id"
+    }
+    fake_media_cls = MagicMock()
+    fake_media_instance = MagicMock()
+    fake_media_cls.return_value = fake_media_instance
+
+    client = DriveClient(fake_creds)
+
+    with patch("googleapiclient.discovery.build", return_value=fake_service), \
+         patch("googleapiclient.http.MediaFileUpload", fake_media_cls):
+        result = client.upload_file(
+            local_path=local_file,
+            drive_name="manifest.json",
+            parent_id="snapshot-folder-id",
+            mime_type=JSON_MIME,
+        )
+
+    assert result == "uploaded-file-id"
+
+    # Body has name + parent (no MIME — Drive infers from MediaFileUpload).
+    body = fake_service.files.return_value.create.call_args.kwargs["body"]
+    assert body == {
+        "name": "manifest.json",
+        "parents": ["snapshot-folder-id"],
+    }
+    # MediaFileUpload was constructed with the local path + mime type.
+    fake_media_cls.assert_called_once()
+    media_args = fake_media_cls.call_args
+    assert media_args.args[0] == str(local_file) or media_args.kwargs.get("filename") == str(local_file)
+    assert media_args.kwargs.get("mimetype") == JSON_MIME
+    # The media kwarg got passed to create().
+    assert fake_service.files.return_value.create.call_args.kwargs["media_body"] is fake_media_instance
