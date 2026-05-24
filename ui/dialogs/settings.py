@@ -970,7 +970,24 @@ class SettingsDialog(ctk.CTkToplevel):
         self._gdrive_backup_btn.configure(
             state="normal", text="Сделать backup сейчас",
         )
-        # Refresh sign-in state — RefreshError inside run_backup
-        # triggers ensure_valid_credentials → sign_out, so the button
-        # states need to flip back to "not signed in".
+        # If ensure_valid_credentials() inside run_backup hit a
+        # RefreshError, GDriveAuth.ensure_valid_credentials() already
+        # called sign_out() internally — credentials gone, token file
+        # deleted. But Phase 7.0's _on_gdrive_signed_out callback only
+        # runs when the user clicks Выйти, so the top status badge +
+        # config.json (gdrive_enabled, gdrive_account_email) remain
+        # stale "signed in" until we sync them here. Codex P2 on PR #48
+        # caught this UI/config drift.
+        #
+        # is_signed_in() is the canonical post-failure check: if False,
+        # ensure_valid_credentials must have sign-out'd; call the mixin
+        # callback so the badge flips to "Не подключён" and config
+        # persists the revoked state. sign_out() inside is idempotent —
+        # safe even though the auth layer already cleared its state.
+        if not self._parent._gdrive_auth.is_signed_in():
+            self._parent._on_gdrive_signed_out()
+        # Refresh button states regardless — covers both the auth-
+        # revoked path (just synced above) and any non-auth failure
+        # (network, quota, disk full) where buttons should re-enable
+        # to allow retry.
         self._refresh_gdrive_button_state()
