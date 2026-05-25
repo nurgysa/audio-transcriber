@@ -180,6 +180,92 @@ def test_to_segments_handles_word_outside_any_segment():
     assert segs[0]["words"][0]["word"] == "Hello."
 
 
+def test_to_segments_drops_word_before_first_segment_start():
+    """Regression for codex P2 on PR #51: a word whose midpoint falls
+    BEFORE the first segment's start must NOT be silently assigned to
+    that segment. The bug version checked only ``mid <= seg.end`` and
+    so dropped any word satisfying ``mid <= first_seg.end`` into the
+    first bucket regardless of where it actually started. That would
+    misalign with pyannote speaker turns in the upcoming hybrid path
+    that consumes ``segment["words"]``."""
+    payload = {
+        "segments": [
+            # First segment starts at t=10.0 — there's a lead-in gap before it.
+            {"start": 10.0, "end": 15.0, "text": " Привет."},
+        ],
+        "words": [
+            # This word lives in the lead-in (mid=0.5), BEFORE first segment.
+            # Bug version: mid=0.5 <= 15.0 → placed in seg[0]. Fixed version:
+            # 10.0 <= 0.5 is False → dropped (correct: no segment owns it).
+            {"word": "lead-in", "start": 0.0, "end": 1.0},
+            # Real word inside the segment — must still be placed.
+            {"word": "Привет.", "start": 10.5, "end": 14.5},
+        ],
+    }
+    segs = _to_segments(payload)
+    assert len(segs) == 1
+    assert len(segs[0]["words"]) == 1, \
+        "lead-in word must be dropped, not assigned to first segment"
+    assert segs[0]["words"][0]["word"] == "Привет."
+
+
+def test_to_segments_drops_word_in_gap_between_segments():
+    """Regression for codex P2 on PR #51: a word whose midpoint falls in
+    the silence/inter-speaker gap between two segments must NOT be assigned
+    to the next segment. The bug version checked only ``mid <= seg.end``,
+    so any inter-segment word would land in whichever later segment first
+    satisfied that inequality — corrupting downstream speaker alignment."""
+    payload = {
+        "segments": [
+            {"start": 0.0, "end": 2.0, "text": " First."},
+            # Gap from t=2.0 to t=10.0 (pause / silence / room tone).
+            {"start": 10.0, "end": 12.0, "text": " Second."},
+        ],
+        "words": [
+            {"word": "First.", "start": 0.1, "end": 1.9},
+            # Mid=6.0 sits squarely in the gap. Bug version: 6.0 <= 12.0
+            # → placed in second segment. Fixed version: neither
+            # 0.0 <= 6.0 <= 2.0 nor 10.0 <= 6.0 <= 12.0 → dropped (correct).
+            {"word": "ghost", "start": 5.5, "end": 6.5},
+            {"word": "Second.", "start": 10.1, "end": 11.9},
+        ],
+    }
+    segs = _to_segments(payload)
+    assert len(segs) == 2
+    assert len(segs[0]["words"]) == 1
+    assert segs[0]["words"][0]["word"] == "First."
+    assert len(segs[1]["words"]) == 1, \
+        "in-gap word must be dropped, not bleed into second segment"
+    assert segs[1]["words"][0]["word"] == "Second."
+
+
+def test_to_segments_word_on_segment_boundary_lands_in_segment():
+    """A word whose midpoint sits EXACTLY at seg.start or seg.end is a
+    legitimate boundary case — must be assigned (interval is inclusive).
+    Pins the interval-check semantics so a future regression doesn't
+    accidentally make boundaries exclusive."""
+    payload = {
+        "segments": [
+            {"start": 0.0, "end": 2.0, "text": " A."},
+            {"start": 2.0, "end": 4.0, "text": " B."},
+        ],
+        "words": [
+            # Midpoint exactly at start of seg[0] (0.0). Allowed: lands in seg[0].
+            {"word": "start", "start": -0.5, "end": 0.5},
+            # Midpoint exactly at end of seg[0] / start of seg[1] (2.0).
+            # Tie-break: first matching segment wins → seg[0].
+            {"word": "boundary", "start": 1.5, "end": 2.5},
+            # Midpoint exactly at end of seg[1] (4.0). Allowed: lands in seg[1].
+            {"word": "end", "start": 3.5, "end": 4.5},
+        ],
+    }
+    segs = _to_segments(payload)
+    assert len(segs[0]["words"]) == 2
+    assert [w["word"] for w in segs[0]["words"]] == ["start", "boundary"]
+    assert len(segs[1]["words"]) == 1
+    assert segs[1]["words"][0]["word"] == "end"
+
+
 def test_to_segments_falls_back_to_flat_text():
     payload = {"language": "russian", "text": "Просто текст"}
     segs = _to_segments(payload)
