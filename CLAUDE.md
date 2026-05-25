@@ -90,7 +90,7 @@ Whisper-large and pyannote can't be in VRAM at the same time on this card.
 Before any commit:
 
 ```bash
-pytest                       # must show green; baseline = 380 tests
+pytest                       # must show green; baseline = 407 tests
                              # (was 285 pre-code-switching; +30 from Phase 1
                              # cloud/UI tests, +4 segmenter, +15 mixed-mode,
                              # +8 from sampling-rate / VAD-resample fixes,
@@ -101,7 +101,9 @@ pytest                       # must show green; baseline = 380 tests
                              # +10 from backup orchestrator (Phase 7.1 PR-B #47),
                              # +2 from backup-button smoke (Phase 7.1 PR-C #48),
                              # +1 from backup-failure state-sync regression
-                             #   (Codex P2 fix #49))
+                             #   (Codex P2 fix #49),
+                             # +27 from Groq STT provider with word-level
+                             #   granularities (Phase 6.5 PR-A))
 python -m ruff check .       # must be clean
 ```
 
@@ -124,7 +126,7 @@ ruff config (line-length=100, target=py310, rules E/W/F/I/B/UP).
 | Diarization subprocess | `diarize_worker.py` |
 | Audio recording | `recorder.py` |
 | Cloud provider ABC + registry | `providers/base.py` + `providers/__init__.py` |
-| Cloud transcription providers | `providers/{assemblyai,deepgram,gladia,openai_whisper,speechmatics}.py` |
+| Cloud transcription providers | `providers/{assemblyai,deepgram,gladia,groq,openai_whisper,speechmatics}.py` |
 | Task extraction (LLM → Linear/Glide) | `tasks/` (`extractor`, `sender`, `schema`, `persistence`, `linear_client`, `glide_client`, `openrouter_client`, `errors`) + `tasks/backends/` (Protocol-based dispatch — `base.py`, `linear.py`, `glide.py`) |
 | Voice library (speaker enrollment) | `voice_library.py` + `enrollment_worker.py` |
 | Audio editor | `audio_cutter.py` |
@@ -152,6 +154,22 @@ ruff config (line-length=100, target=py310, rules E/W/F/I/B/UP).
 
 ## Active work / context
 
+- **Phase 6.5 — Groq STT + hybrid local diarize** (May 2026, in flight):
+  user wants KZ+RU+EN code-switching transcription via cloud API while
+  keeping diarization on the local GTX 1650 Ti (pyannote). PR-A (this PR)
+  adds `providers/groq.py` with `whisper-large-v3` default — Groq is
+  ~60× cheaper than OpenRouter for the same model ($0.111/h full,
+  $0.04/h turbo) and exposes an OpenAI-compatible
+  `/openai/v1/audio/transcriptions` endpoint. Provider requests BOTH
+  `timestamp_granularities[]=segment` and `=word` and the new
+  `_to_segments()` distributes top-level `words[]` to their owning
+  segment by midpoint time-overlap — this preps the data shape for
+  PR-B's hybrid orchestrator. PR-B (next) wires
+  `_transcribe_via_cloud_with_local_diarize` in `transcriber/__init__.py`
+  to spawn pyannote in parallel with the Groq upload, then merge via the
+  existing `speaker_aligner._assign_speakers_word_level`. PR-C (deferred):
+  Settings UI model picker. Spec/plan at
+  `~/.claude/plans/glittery-foraging-scott.md` (user-local).
 - **Codebase review** (May 2026): F1–F8 archived in
   `~/.claude/plans/codebase-review-keen-thompson.md` (user-local).
   Shipped: F1/F3/F5/F6 (PR #1), F3-B Tk-cleanup narrowing (PR #2),
