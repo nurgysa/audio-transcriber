@@ -334,10 +334,14 @@ def _to_segments(payload: dict) -> list[dict]:
     2. ``segments[]`` with words[] embedded inside each segment — used
        as-is too (we trust the API's grouping).
     3. ``segments[]`` PLUS a top-level ``words[]`` — the canonical shape
-       when both granularities are requested. We distribute each word
-       to its owning segment by midpoint time-overlap, then expose them
-       on ``segment["words"]`` for downstream consumption by
-       :mod:`transcriber.speaker_aligner`.
+       when both granularities are requested. We distribute each word to
+       its owning segment by midpoint time-overlap (interval check —
+       ``seg.start <= mid <= seg.end``), then expose them on
+       ``segment["words"]`` for downstream consumption by
+       :mod:`transcriber.speaker_aligner`. Words whose midpoint falls
+       outside every segment (before the first, in an inter-segment gap,
+       or past the last) are dropped silently — preferable to mislabeling
+       them onto a neighboring segment that doesn't actually contain them.
 
     Falls back to a single segment carrying the flat ``text`` field if
     the response is in ``json`` mode by accident. Returns ``[]`` for
@@ -379,10 +383,19 @@ def _to_segments(payload: dict) -> list[dict]:
                 # Initialize empty buckets only when we have words to fill.
                 for row in out:
                     row["words"] = []
-                # Each word lands in the FIRST segment whose end-time is at
-                # or past the word's midpoint. Words past the last segment
-                # are dropped — Groq has been observed to emit phantom words
-                # past the audio end; better silent skip than crash.
+                # Each word lands in the FIRST segment whose [start, end]
+                # interval contains the word's midpoint. Words that fall
+                # OUTSIDE every segment — before the first segment's start,
+                # inside a silence gap between segments, or past the last
+                # segment's end — are dropped silently. This matters for the
+                # hybrid PR-B path that feeds segment["words"] to
+                # speaker_aligner: a misplaced word would land on the wrong
+                # pyannote speaker turn and corrupt the dialog. Dropping is
+                # the safe default — an unassigned word is preferable to a
+                # mislabeled one. (Codex P2 #51 fix: the prior version
+                # checked only ``mid <= seg.end``, which silently swept any
+                # pre-first-segment word into seg[0] and any in-gap word
+                # into the next segment.)
                 for w in top_words:
                     try:
                         w_start = float(w["start"])
@@ -391,18 +404,14 @@ def _to_segments(payload: dict) -> list[dict]:
                         continue
                     w_text = w.get("word") or ""
                     mid = (w_start + w_end) / 2.0
-                    placed = False
                     for row in out:
-                        if mid <= row["end"]:
+                        if row["start"] <= mid <= row["end"]:
                             row["words"].append({
                                 "start": w_start,
                                 "end": w_end,
                                 "word": w_text,
                             })
-                            placed = True
                             break
-                    # Silently drop unplaced words (see comment above).
-                    _ = placed
                 # Strip empty words[] keys so downstream callers can use the
                 # idiomatic ``if seg.get("words")`` check without false
                 # positives from empty lists.
