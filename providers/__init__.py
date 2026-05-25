@@ -16,6 +16,7 @@ from .base import (
 )
 from .deepgram import DeepgramProvider
 from .gladia import GladiaProvider
+from .groq import GroqProvider
 from .openai_whisper import OpenAIWhisperProvider
 from .speechmatics import SpeechmaticsProvider
 
@@ -30,13 +31,18 @@ from .speechmatics import SpeechmaticsProvider
 #                      identical to the local pipeline (~$0.61/h).
 #   3. AssemblyAI    — original default (~$0.65/h with diarization).
 #   4. Speechmatics  — premium diarization (~$1.04/h).
-#   5. OpenAI Whisper — cheapest transcription, no diarization (~$0.36/h).
+#   5. OpenAI Whisper — cheap transcription, no diarization (~$0.36/h).
+#   6. Groq          — cheapest transcription overall, whisper-large-v3
+#                      family, no native diarization (~$0.04/h turbo,
+#                      ~$0.111/h full). Hybrid mode (cloud STT + local
+#                      pyannote) lands in PR-B.
 PROVIDERS: dict[str, type[TranscriptionProvider]] = {
     "Deepgram": DeepgramProvider,
     "Gladia": GladiaProvider,
     "AssemblyAI": AssemblyAIProvider,
     "Speechmatics": SpeechmaticsProvider,
     "OpenAI Whisper": OpenAIWhisperProvider,
+    "Groq": GroqProvider,
 }
 
 
