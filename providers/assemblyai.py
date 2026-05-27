@@ -8,8 +8,10 @@ API workflow (no SDK — plain HTTP):
     3. GET /v2/transcript/{id} every few seconds until
        status ∈ {"completed", "error"}.
 
-Pricing (Mar 2026):
-  $0.37/h transcription, $0.65/h with speaker diarization. ~2 GB upload limit.
+Pricing (May 2026 — Universal-2 model):
+  $0.15/h transcription, +$0.02/h speaker diarization add-on (~$0.17/h combined).
+  Free tier: $50 credits / up to 185 hours. ~2 GB upload limit.
+  Source: https://www.assemblyai.com/pricing/
 
 Languages: 99+, including ``ru`` and ``kk``. ``language_detection: true``
 when the user picked auto.

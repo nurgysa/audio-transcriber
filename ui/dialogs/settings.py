@@ -400,8 +400,8 @@ class SettingsDialog(ctk.CTkToplevel):
         # provider without speaker labels.
         label(
             section,
-            "ℹ Цены с диаризацией: Deepgram ~$0.43/ч • "
-            "Gladia ~$0.61/ч • AssemblyAI ~$0.65/ч • "
+            "ℹ Цены с диаризацией: AssemblyAI ~$0.17/ч • "
+            "Deepgram ~$0.43/ч • Gladia ~$0.61/ч • "
             "Speechmatics ~$1.04/ч.",
             anchor="w",
         ).grid(row=5, column=0, columnspan=3, padx=4, pady=(0, 2), sticky="w")
