@@ -34,13 +34,17 @@ folder may be read-only (e.g. installed under Program Files via UAC,
 which the v5 plan explicitly advises against but defensive coding
 costs nothing). %TEMP% is always writable for the launching user.
 """
+import faulthandler
 import os
 import sys
 import tempfile
 
 # In `console=False` PyInstaller bundles (runw.exe), sys.stdout and
-# sys.stderr come back as None — printing to them raises AttributeError.
-# Open a sidecar file and assign it BEFORE anything else may print.
+# sys.stderr come back as None — printing to them raises AttributeError
+# and `faulthandler.enable()` raises RuntimeError. The `import faulthandler`
+# above is safe (the module's import has no side effects), but its
+# `.enable()` call must wait until sys.stderr is guaranteed non-None.
+# Open a sidecar file and assign it BEFORE the enable call below.
 if sys.stderr is None or sys.stdout is None:
     _log_path = os.path.join(
         tempfile.gettempdir(),
@@ -58,5 +62,4 @@ if sys.stderr is None or sys.stdout is None:
           file=sys.stderr, flush=True)
 
 # Now safe to enable faulthandler; sys.stderr is guaranteed non-None.
-import faulthandler  # noqa: E402  (after the stderr fix-up above)
 faulthandler.enable(file=sys.stderr)
