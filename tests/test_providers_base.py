@@ -34,27 +34,16 @@ def test_supports_mixed_default_false():
 def test_max_upload_bytes_default_none():
     """ABC default for max_upload_bytes is None — meaning "no provider-side
     hard cap, cloud_chunker should NOT split based on this provider's
-    upload limit". Providers with a documented small cap (Groq Free 25 MB,
-    OpenAI whisper-1 25 MB) override this to the byte value; the chunker
-    consults the attribute to decide whether to split a file before
-    upload."""
+    upload limit". The chunker consults the attribute to decide whether
+    to split a file before upload.
+
+    Historically Groq and OpenAI Whisper overrode this to 25 MB; both
+    providers were deleted in the 2026-05-28 cloud-only rip-out because
+    they lacked native diarization. The surviving 4 providers all
+    advertise multi-GB uploads — see ``test_other_providers_have_no_cap``.
+    """
     p = _StubProvider()
     assert p.max_upload_bytes is None
-
-
-def test_groq_advertises_25mb_upload_cap():
-    """Groq Free tier hard cap. Test pins the value so a future tier-class
-    edit (or a docstring drift) doesn't accidentally remove the cap and
-    let the chunker pass oversized files through."""
-    from providers.groq import GroqProvider
-    assert GroqProvider.max_upload_bytes == 25 * 1024 * 1024
-
-
-def test_openai_whisper_advertises_25mb_upload_cap():
-    """OpenAI whisper-1 gateway has the same 25 MB cap. Pinned for the
-    same reason as Groq."""
-    from providers.openai_whisper import OpenAIWhisperProvider
-    assert OpenAIWhisperProvider.max_upload_bytes == 25 * 1024 * 1024
 
 
 def test_other_providers_have_no_cap():

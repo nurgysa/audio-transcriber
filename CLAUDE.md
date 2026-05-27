@@ -6,61 +6,45 @@ for the latter see `README.md`.
 
 ## What this project is
 
-Windows desktop GUI for offline audio transcription + speaker diarization.
-Stack: CustomTkinter (UI) + faster-whisper/ctranslate2 (ASR) + pyannote.audio
-(diarization) + a multi-provider cloud transcription path (AssemblyAI,
-Deepgram, Gladia, OpenAI Whisper, Speechmatics — see `providers/base.py`
-ABC for the extension point).
+Windows desktop GUI for cloud-API audio transcription + speaker diarization.
+Stack: CustomTkinter (UI) + 4 cloud STT providers (AssemblyAI, Deepgram,
+Gladia, Speechmatics — see `providers/base.py` ABC for the extension point)
++ OpenRouter for task extraction and protocol generation.
 
-Target hardware: ASUS ROG Strix G15, GTX 1650 Ti (4 GB VRAM). VRAM is the
-binding constraint — many architectural decisions exist solely because both
-Whisper-large and pyannote can't be in VRAM at the same time on this card.
+Cloud-only since the 2026-05-28 rip-out. The local CUDA / Whisper / pyannote
+code is gone — both from the codebase and from `requirements.txt`. No GPU
+needed; transcription is HTTPS calls.
+
+Earlier history (pre-2026-05-28): targeted ASUS ROG Strix G15, GTX 1650 Ti
+(4 GB VRAM), faster-whisper + pyannote locally. Many architectural ghosts
+from that era (`_DIARIZE_WORKER_PATH`, `cuda_utils`, the 25-min STFT chunker
+threshold) are gone; only what cloud paths actively use remains.
 
 ## Hard invariants — DO NOT BREAK
 
 1. **Faulthandler must initialize before any C-extension import.** See
-   `app.py:13-16`. ctranslate2/torch/pyannote can SIGSEGV during CUDA
-   teardown; without the early `faulthandler.enable()`, the process
-   vanishes silently.
-2. **`ctranslate2` must be imported before `torch`** on Windows. See the
-   comment at the top of `transcriber/__init__.py`. Wrong order ⇒
-   `STATUS_DLL_INIT_FAILED` (Windows code 3221225794) on first run.
-3. **Unload Whisper with `model.unload_model(to_cpu=True)`, never `del
-   model`.** `del` triggers Fatal Python errors on Windows + GTX 1650 Ti
-   during ctranslate2 teardown. See the long comment in
-   `transcriber/__init__.py` around the unload site.
-   *(After PR #4 the file is `transcriber/__init__.py` — F4 split
-   moved the monolith into a package with `cuda_utils`, `progress`,
-   `prompt`, `speaker_aligner` submodules. PR #9 added the
-   `_DIARIZE_WORKER_PATH` constant to keep the subprocess path valid
-   from inside the package.)*
-4. **Disable cuDNN inside `diarize_worker.py`** before pyannote loads.
-   On the 1650 Ti this prevents `HOST_ALLOCATION_FAILED` /
-   `CUBLAS_STATUS_NOT_INITIALIZED`.
-5. **The diarize subprocess uses a stdin GO protocol.** Parent writes
-   `GO\n` to child stdin AFTER unloading Whisper. Child blocks reading
-   stdin until then. This collapses the "70 % progress dead zone" where
-   both processes were idle waiting for the other.
-6. **Do not "liberalize" version pins in `requirements.txt`.** Every
-   pin is load-bearing — speechbrain/lightning/pyannote/cuDNN
-   workarounds depend on exact combinations. README explains why.
-7. **Numpy audio → `model.transcribe()` MUST be 16 kHz mono.**
-   faster-whisper assumes that rate unconditionally for ndarray input;
-   passing a 44.1 / 48 kHz slice silently mangles text and timestamps
-   (no error, just wrong output). The mixed-mode path in
-   `transcriber/__init__.py` enforces this via `ensure_16khz_mono(wav_path)`
-   called UPSTREAM of `load_model()` — running ffmpeg after `load_model`
-   crashes Windows (consequence of invariant #2). When adding any new
-   numpy-into-Whisper code path, gate it the same way.
-8. **Numpy audio → `faster_whisper.vad.get_speech_timestamps` MUST be
-   16 kHz mono.** Silero's neural model is 16-kHz-only and faster-whisper
-   does NOT resample non-16k input — formants land at wrong frequencies
-   and detection collapses. The `sampling_rate` kwarg only fixes
-   ms→sample threshold arithmetic, not detection itself. Use
-   `audio_io.resample_to_16khz_mono(samples, sample_rate)` (the numpy-in
-   sibling of `ensure_16khz_mono`) — short-circuits when input is already
-   16 kHz, ffmpeg pipe otherwise. `silence_remover.remove_silences`
-   does this internally; future callers should follow the same pattern.
+   `app.py:13-16`. Native deps (soundfile, sounddevice) can SIGSEGV during
+   shutdown; without the early `faulthandler.enable()`, the process
+   vanishes silently. The old CUDA-teardown concern that motivated this
+   in the GPU-era codebase is gone, but the invariant is cheap and still
+   buys diagnostic value.
+2. **No local CUDA / pyannote / faster-whisper / ctranslate2 / torch
+   code may be reintroduced.** The codebase has been cloud-only since
+   the 2026-05-28 rip-out. Adding any of those imports anywhere —
+   `transcriber/`, `tasks/`, `ui/`, `providers/`, tests — is a regression.
+   If a feature truly needs local inference, open a discussion before
+   coding. The rationale is documented in
+   `docs/superpowers/plans/2026-05-28-cloud-only-mvp-v5.md`.
+3. **Do not "liberalize" version pins in `requirements.txt`.** Even
+   after the rip-out trimmed the heavy stack, the remaining pins
+   (CustomTkinter / soundfile / sounddevice / google-auth versions)
+   are load-bearing on Windows. Bumping them needs explicit smoke
+   testing on a clean Win10 + Win11 VM.
+
+(Old invariants #3 / #4 / #5 / #7 / #8 — unload_model, cuDNN, GO protocol,
+16-kHz-mono-to-Whisper, 16-kHz-mono-to-Silero-VAD — are obsolete; their
+code paths were deleted in the 2026-05-28 rip-out. The git history
+preserves the rationale if anyone needs it.)
 
 ## Code conventions
 
@@ -90,39 +74,15 @@ Whisper-large and pyannote can't be in VRAM at the same time on this card.
 Before any commit:
 
 ```bash
-pytest                       # must show green; baseline = 462 tests
-                             # (was 285 pre-code-switching; +30 from Phase 1
-                             # cloud/UI tests, +4 segmenter, +15 mixed-mode,
-                             # +8 from sampling-rate / VAD-resample fixes,
-                             # +10 from GDrive auth (Phase 7.0 PR-A #40/#41),
-                             # +4 from Settings-section smoke (Phase 7.0 PR-B #42),
-                             # +11 from Drive client wrapper + root-parent fix
-                             #   (Phase 7.1 PR-A #45 + #46),
-                             # +10 from backup orchestrator (Phase 7.1 PR-B #47),
-                             # +2 from backup-button smoke (Phase 7.1 PR-C #48),
-                             # +1 from backup-failure state-sync regression
-                             #   (Codex P2 fix #49),
-                             # +27 from Groq STT provider with word-level
-                             #   granularities (Phase 6.5 PR-A),
-                             # +6 from transparent opus compression for
-                             #   files > 25 MB (Phase 6.5 PR-A.1),
-                             # +3 regression for word-interval check in
-                             #   _to_segments (Codex P2 fix on PR #51),
-                             # +4 max_upload_bytes ABC attribute +
-                             #   18 cloud_chunker for 2-5h audio
-                             #   (Phase 6.5 PR-C),
-                             # +2 missing-file regression for
-                             #   needs_chunking (Codex P2 fix on PR #54),
-                             # +7 RNNoise denoise (lazy model download +
-                             #   ensure_wav denoise param) — Phase 6.5 PR-E,
-                             # +4 Windows ffmpeg filter-path escape
-                             #   (Codex P1 fix on PR #56),
-                             # +10 hybrid cloud-STT + local-pyannote
-                             #   diarization (Phase 6.5 PR-B),
-                             # +1 real-ffmpeg integration test for RNNoise
-                             #   escape (PR #57 was incomplete — single
-                             #   backslash didn't survive ffmpeg's two-
-                             #   level filtergraph parser))
+pytest                       # must show green; baseline = 333 tests
+                             # (was 462 pre-2026-05-28; -135 local-path
+                             # tests removed alongside the cuda_utils /
+                             # segmenter / speaker_aligner / prompt /
+                             # progress / diarize_worker / enrollment_worker
+                             # / voice_library / silence_remover modules,
+                             # +6 unanticipated cloud-helper survivors
+                             # in test_transcriber_pure-adjacent fixtures.
+                             # Tasks 5-7 of the v5 plan add ~13 more.)
 python -m ruff check .       # must be clean
 ```
 
@@ -140,16 +100,13 @@ ruff config (line-length=100, target=py310, rules E/W/F/I/B/UP).
 |---|---|
 | Entry point + faulthandler bootstrap | `app.py` |
 | Main window + transcription run loop | `ui/app/` package — `__init__.py` (App-class shell, ~130 LOC) + 5 mixins (`recorder_mixin`, `save_mixin`, `settings_mixin`, `dialogs_mixin`, `transcription_mixin`) + `builder.py` (widget tree as a `build_ui(app)` free function) + `constants.py` + `main_entry.py` — split via F4-PR-2 series, PRs #12/#14–#18 |
-| All dialogs | `ui/dialogs/` (`extract_tasks/` package + `settings.py`, `history.py`, `voices.py`, `terms.py`, `system_monitor.py`) |
-| Whisper transcription | `transcriber/` package (`__init__.py` + `cuda_utils`, `progress`, `prompt`, `speaker_aligner`, `cloud_chunker` — last added Phase 6.5 PR-C) |
-| Diarization subprocess | `diarize_worker.py` |
+| All dialogs | `ui/dialogs/` (`extract_tasks/` package + `settings.py`, `history.py`, `terms.py`, `system_monitor.py`) — `voices.py` removed in the 2026-05-28 rip-out |
+| Cloud transcription dispatcher | `transcriber/` package — `__init__.py` (cloud-only `Transcriber` class + `TranscriptionCancelled` + `_check_cancelled`; ~250 LOC after the rip-out) and `cloud_chunker.py` (silence-aware splitter for files > provider upload cap). The old `cuda_utils` / `prompt` / `progress` / `segmenter` / `speaker_aligner` submodules were deleted in the 2026-05-28 rip-out. |
 | Audio recording | `recorder.py` |
 | Cloud provider ABC + registry | `providers/base.py` + `providers/__init__.py` |
-| Cloud transcription providers | `providers/{assemblyai,deepgram,gladia,groq,openai_whisper,speechmatics}.py` |
+| Cloud transcription providers | `providers/{assemblyai,deepgram,gladia,speechmatics}.py` — Groq + OpenAI Whisper deleted in the 2026-05-28 rip-out (no native diarization, depended on the now-gone hybrid-with-local-pyannote path) |
 | Task extraction (LLM → Linear/Glide) | `tasks/` (`extractor`, `sender`, `schema`, `persistence`, `linear_client`, `glide_client`, `openrouter_client`, `errors`) + `tasks/backends/` (Protocol-based dispatch — `base.py`, `linear.py`, `glide.py`) |
-| Voice library (speaker enrollment) | `voice_library.py` + `enrollment_worker.py` |
-| Audio editor | `audio_cutter.py` |
-| Silence removal | `silence_remover.py` |
+| Audio editor | `audio_cutter.py` (silence-removal button removed in the 2026-05-28 rip-out; manual trim + preview + export retained) |
 | Logging setup | `logging_setup.py` |
 | Persistent settings | `config.json` (template: `config.example.json`); helper: `utils.save_config` |
 | Google Drive auth (Phase 7.0) | `gdrive/auth.py` (`GDriveAuth` — OAuth desktop loopback via `InstalledAppFlow`; tokens at `~/.audio-transcriber/gdrive-token.json`) |
@@ -173,6 +130,25 @@ ruff config (line-length=100, target=py310, rules E/W/F/I/B/UP).
 
 ## Active work / context
 
+- **Phase 8 — Cloud-only rip-out** (May 2026, in flight as of 2026-05-28):
+  user pivot «больше cuda не нужен. API буду использовать» triggered
+  deletion of the local CUDA / Whisper / pyannote stack from the codebase.
+  Eleven modules removed: `transcriber/{cuda_utils, segmenter,
+  speaker_aligner, prompt, progress}`, `diarize_worker`,
+  `enrollment_worker`, `voice_library`, `silence_remover`,
+  `providers/groq`, `providers/openai_whisper`. `transcriber/__init__.py`
+  collapsed from ~1300 to ~250 LOC; `TranscriptionCancelled` relocated
+  from `cuda_utils.py` to `transcriber/__init__.py` top (the 4 surviving
+  cloud providers already imported it from `transcriber`, so no caller
+  change). `requirements.txt` dropped 8 heavy deps (faster-whisper /
+  ctranslate2 / torch / torchaudio / pyannote.audio / speechbrain /
+  pytorch-lightning / nvidia-ml-py). All Phase 6.5 hybrid-with-local-
+  diarize work (PR-B) and Phase 2 mixed-language per-segment VAD are
+  gone (AssemblyAI Universal handles KZ+RU+EN code-switching natively
+  and provides diarization, replacing the need for both). Plan at
+  `docs/superpowers/plans/2026-05-28-cloud-only-mvp-v5.md`. Tasks 3-9
+  (UI strip, PyInstaller, protocol generator, bundle integration,
+  smoke, delivery) remain — see plan for sequencing.
 - **Phase 6.5 — Groq STT + hybrid local diarize** (May 2026, in flight):
   user wants KZ+RU+EN code-switching transcription via cloud API while
   keeping diarization on the local GTX 1650 Ti (pyannote). PR-A (this PR)
