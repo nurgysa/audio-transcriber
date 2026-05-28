@@ -171,7 +171,7 @@ def build_ui(app):
     # path runs a pre-denoise pass via ffmpeg before sending audio to
     # the provider.
     app._denoise_var = ctk.BooleanVar(
-        value=bool(app._config.get("denoise_audio", False)),
+        value=bool(app._config.get("denoise_audio", True)),
     )
 
     # Cloud provider state. Whisper-model / GPU-device pickers and the
