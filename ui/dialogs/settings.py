@@ -74,14 +74,12 @@ class SettingsDialog(ctk.CTkToplevel):
         # natural height and the footer pins to the bottom.
         self.grid_rowconfigure(2, weight=1)
 
-        # --- Header ---
-        header = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=48)
+        # --- Header (thin divider strip — title is in the OS title bar) ---
+        # We intentionally do NOT duplicate "Настройки" as an in-body H1:
+        # the OS title bar already shows it via self.title("Настройки"),
+        # and the inline label was a leftover from pre-redesign layout.
+        header = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=8)
         header.grid(row=0, column=0, sticky="ew")
-        ctk.CTkLabel(
-            header, text="Настройки",
-            font=ctk.CTkFont(family=FONT, size=16, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).grid(row=0, column=0, padx=20, pady=12)
 
         # --- First-run status banner (between header and tabs) ---
         # Clickable: jumps to the relevant tab + focuses the relevant widget.
@@ -160,12 +158,22 @@ class SettingsDialog(ctk.CTkToplevel):
         self._update_banner()
 
         # --- Footer ---
+        # "Закрыть" is a cancel action, not the primary CTA — use tonal_button
+        # so visual weight matches actual importance.
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.grid(row=3, column=0, padx=16, pady=(4, 14), sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
-        primary_button(
+        tonal_button(
             footer, text="Закрыть", command=self.destroy, width=120,
         ).grid(row=0, column=0, sticky="e")
+
+        # Esc closes — standard modal-dialog convention.
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+        # CTkToplevel quirk: immediate iconbitmap() is silently dropped if
+        # the WM hasn't finished its handshake. Defer 200 ms so the call
+        # lands after Windows has assigned the WM_CLASS / icon slot.
+        self.after(200, self._apply_dialog_icon)
 
     def destroy(self) -> None:
         """Remove app-level Var traces before the Toplevel is torn down.
@@ -195,6 +203,25 @@ class SettingsDialog(ctk.CTkToplevel):
                     # Var already destroyed during parent teardown — safe to ignore.
                     pass
         super().destroy()
+
+    def _apply_dialog_icon(self) -> None:
+        """Apply the audio_transcriber.ico to this Toplevel.
+
+        Called via `self.after(200, ...)` to work around the CTkToplevel
+        WM-handshake race that silently drops immediate `iconbitmap()` calls
+        on Windows. The 200 ms delay is empirically sufficient for all
+        Windows 10/11 builds we test on.
+
+        Swallows TclError + ImportError + FileNotFoundError — on
+        Linux/macOS .ico is unsupported, but the dialog still opens fine.
+        """
+        try:
+            from utils import get_app_icon_path
+            icon_path = get_app_icon_path()
+            if icon_path:
+                self.iconbitmap(icon_path)
+        except (tk.TclError, ImportError, FileNotFoundError):
+            pass
 
     # ── First-run banner state machine + click handlers ────────────────
 
