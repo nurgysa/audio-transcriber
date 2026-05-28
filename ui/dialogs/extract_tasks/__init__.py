@@ -108,27 +108,44 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._try_load_existing_tasks()
 
         self.title("Извлечение задач")
-        # 1400x900 — un-maximize fallback. The dialog opens MAXIMIZED via
-        # self.state('zoomed') below — Tk Toplevels don't inherit the parent's
-        # zoom state on Windows, so we explicitly maximize. minsize prevents
-        # the master-detail layout (left list ≥260, right form ≥520) from
-        # collapsing below readability when user resizes.
-        self.geometry("1400x900")
-        self.minsize(960, 680)
         self.configure(fg_color=BG)
         self.transient(parent)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.grab_set()
 
-        # Maximize on open — matches the main window's zoomed-on-launch UX
-        # (ui/app/__init__.py:88). state() must be called after geometry
-        # so the un-maximize fallback is set correctly.
+        # Borderless overlay UX (user request 2026-05-28): instead of a
+        # separate Toplevel window with its own title bar, the dialog feels
+        # like an inline panel by:
+        #   1. Removing the OS window chrome (overrideredirect)
+        #   2. Positioning to exactly cover the parent window's geometry
+        # This is a pragmatic v0.1 compromise — proper inline architecture
+        # lands in Tauri v0.2 (PR #69 spec §4.3, React Router routes
+        # replace dialog Toplevels). Trade-offs documented for v0.1:
+        #   - No separate Alt-Tab entry (dialog can't be switched away to)
+        #   - Window can't be moved/resized by user
+        #   - The "Закрыть" button at the bottom of the dialog is the only
+        #     way out (no OS X button — title bar is gone)
+        # All three are intentional for the "feels inline" UX goal.
+        parent.update_idletasks()
+        x = parent.winfo_rootx()
+        y = parent.winfo_rooty()
+        w = parent.winfo_width()
+        h = parent.winfo_height()
+        # Sanity-check parent geometry — if winfo_* returns 1 (window not
+        # mapped yet) fall back to a sensible default so the dialog isn't
+        # 1×1 pixel.
+        if w < 200 or h < 200:
+            w, h = 1400, 900
+            x, y = 0, 0
         try:
-            self.state("zoomed")
+            self.overrideredirect(True)
+            self.geometry(f"{w}x{h}+{x}+{y}")
         except tk.TclError:
-            # macOS/Linux Tk variants may not recognise 'zoomed' — silently
-            # fall back to the geometry default rather than crashing.
-            pass
+            # If overrideredirect isn't supported (rare WM scenarios), fall
+            # back to a regular Toplevel — still functional, just with its
+            # own window frame.
+            self.geometry(f"{w}x{h}+{x}+{y}")
+            self.minsize(960, 680)
 
         self._build_ui()
 
