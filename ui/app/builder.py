@@ -260,10 +260,10 @@ def build_ui(app):
     # Appearance mode (light/dark/system). The actual ctk.set_appearance_mode
     # call already happened above with the saved value; this StringVar
     # just drives the Settings dialog dropdown and the change callback.
-    saved_appearance_label = app._config.get("appearance_mode", "Системная")
+    saved_appearance_label = app._config.get("appearance_mode", "Тёмная")
     app._appearance_var = ctk.StringVar(
         value=saved_appearance_label
-        if saved_appearance_label in APPEARANCE_MODES else "Системная",
+        if saved_appearance_label in APPEARANCE_MODES else "Тёмная",
     )
 
     # --- Run controls card ---

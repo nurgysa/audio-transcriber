@@ -73,9 +73,9 @@ class App(
         # tuple colors in theme.py resolve to the right palette on first
         # paint. Default "system" follows the OS setting. Persisted via
         # _on_appearance_changed when the user switches in Settings.
-        saved_appearance = load_config().get("appearance_mode", "Системная")
+        saved_appearance = load_config().get("appearance_mode", "Тёмная")
         ctk.set_appearance_mode(
-            APPEARANCE_MODES.get(saved_appearance, "system"),
+            APPEARANCE_MODES.get(saved_appearance, "dark"),
         )
         self.configure(fg_color=BG)
 
