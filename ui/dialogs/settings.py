@@ -61,7 +61,9 @@ class SettingsDialog(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Настройки")
-        self.geometry("520x680")
+        # 640 wide — fits the 4-widget API-key row (label + entry + 👁 +
+        # Проверить + status) without status-label truncation at 520.
+        self.geometry("640x680")
         self.configure(fg_color=BG)
         self.transient(parent)
         self.grab_set()
@@ -119,26 +121,49 @@ class SettingsDialog(ctk.CTkToplevel):
         tab_integrations = self._tabview.add("Интеграции")
         tab_backup = self._tabview.add("Резервная копия")
 
+        # Each tab wraps its content in a CTkScrollableFrame so taller
+        # sections (Tab 1 has 5) don't clip when the dialog is shrunk.
+        # The tab itself owns the scrollbar; sections grid into the
+        # inner scroll frame at rows 0..N.
         for tab in (tab_transcription, tab_integrations, tab_backup):
             tab.grid_columnconfigure(0, weight=1)
+            tab.grid_rowconfigure(0, weight=1)
+
+        scroll_transcription = ctk.CTkScrollableFrame(
+            tab_transcription, fg_color="transparent", corner_radius=0,
+        )
+        scroll_transcription.grid(row=0, column=0, sticky="nsew")
+        scroll_transcription.grid_columnconfigure(0, weight=1)
+
+        scroll_integrations = ctk.CTkScrollableFrame(
+            tab_integrations, fg_color="transparent", corner_radius=0,
+        )
+        scroll_integrations.grid(row=0, column=0, sticky="nsew")
+        scroll_integrations.grid_columnconfigure(0, weight=1)
+
+        scroll_backup = ctk.CTkScrollableFrame(
+            tab_backup, fg_color="transparent", corner_radius=0,
+        )
+        scroll_backup.grid(row=0, column=0, sticky="nsew")
+        scroll_backup.grid_columnconfigure(0, weight=1)
 
         # Default tab = where the STT key lives. First-run client lands here.
         self._tabview.set("Транскрипция")
 
         # Tab 1 «Транскрипция» — core loop (minimal sufficient set)
-        self._build_appearance_section(tab_transcription)
-        self._build_transcription_section(tab_transcription)
-        self._build_audio_section(tab_transcription)
-        self._build_cloud_section(tab_transcription)
-        self._build_dictionaries_section(tab_transcription)
+        self._build_appearance_section(scroll_transcription)
+        self._build_transcription_section(scroll_transcription)
+        self._build_audio_section(scroll_transcription)
+        self._build_cloud_section(scroll_transcription)
+        self._build_dictionaries_section(scroll_transcription)
 
         # Tab 2 «Интеграции» — LLM-side optional extras
-        self._build_openrouter_section(tab_integrations)
-        self._build_linear_section(tab_integrations)
-        self._build_glide_section(tab_integrations)
+        self._build_openrouter_section(scroll_integrations)
+        self._build_linear_section(scroll_integrations)
+        self._build_glide_section(scroll_integrations)
 
         # Tab 3 «Резервная копия» — independent housekeeping
-        self._build_gdrive_section(tab_backup)
+        self._build_gdrive_section(scroll_backup)
 
         # Reactive banner: subscribe to the three vars whose values
         # determine the banner state. Tokens kept on self so destroy()
