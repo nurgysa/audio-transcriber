@@ -87,3 +87,14 @@ def test_dialogs_mixin_has_open_meetings_dialog():
     assert "from ui.dialogs.history" not in mixin, (
         "Old import path must be gone"
     )
+
+
+def test_app_init_schedules_migration_check():
+    """App.__init__ must invoke detect_old_locations on startup."""
+    src = (REPO / "ui" / "app" / "__init__.py").read_text(encoding="utf-8")
+    assert "detect_old_locations" in src, (
+        "App.__init__ must call detect_old_locations to find legacy meetings"
+    )
+    assert "MigrationPromptDialog" in src, (
+        "App.__init__ must reference MigrationPromptDialog for first-launch flow"
+    )
