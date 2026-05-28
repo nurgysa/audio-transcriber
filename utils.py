@@ -84,8 +84,15 @@ def check_ffmpeg() -> bool:
 
 
 def load_config() -> dict:
+    # utf-8-sig (not "utf-8") so a leading UTF-8 BOM is silently stripped on
+    # read. Defensive: third-party tooling that touches config.json — Windows
+    # Notepad on save, PowerShell 5.1 `Set-Content -Encoding UTF8`, some
+    # ZIP-extract pipelines — adds `EF BB BF` at the file start, and the
+    # default "utf-8" codec then raises json.JSONDecodeError "Unexpected UTF-8
+    # BOM" → silent app-start crash. Verified live on 2026-05-28 when a merge
+    # helper script wrote config.json with BOM and the bundle failed to launch.
     if os.path.isfile(_CONFIG_PATH):
-        with open(_CONFIG_PATH, encoding="utf-8") as f:
+        with open(_CONFIG_PATH, encoding="utf-8-sig") as f:
             return json.load(f)
     return {}
 
