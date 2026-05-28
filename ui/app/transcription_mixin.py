@@ -141,7 +141,7 @@ class TranscriptionMixin:
             messagebox.showwarning(
                 "Нужен API-ключ",
                 f"API-ключ для {cloud_provider_name} не задан.\n\n"
-                f"Открой Настройки → Облачный провайдер и вставь ключ.",
+                f"Открой Настройки → Транскрибация (cloud API) и вставь ключ.",
             )
             self._set_running(False)
             return

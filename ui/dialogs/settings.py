@@ -267,7 +267,7 @@ class SettingsDialog(ctk.CTkToplevel):
         )
 
     def _build_cloud_section(self, parent) -> None:
-        section = self._section_card(parent, "Облачный провайдер", row=3)
+        section = self._section_card(parent, "Транскрибация (cloud API)", row=3)
 
         label(section, "Провайдер").grid(
             row=0, column=0, padx=(4, 8), pady=6, sticky="w",
