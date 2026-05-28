@@ -37,6 +37,7 @@ from theme import (
 )
 from ui.app.constants import LANGUAGES
 from ui.widgets import (
+    api_key_row,
     card,
     label,
     option_menu,
@@ -358,39 +359,45 @@ class SettingsDialog(ctk.CTkToplevel):
     def _build_openrouter_section(self, parent) -> None:
         """OpenRouter API key + default model.
 
-        Layout: title, [api_key field][Вставить], [Проверить ключ][status],
-        default model dropdown.
+        Key handling delegated to ui.widgets.api_key_row (entry + eye-toggle
+        + Проверить + status). Default-model dropdown stays as a separate
+        row below.
         """
         section = self._section_card(parent, "OpenRouter", row=5)
 
-        # API key row — entry + paste button
-        label(section, "API ключ").grid(
-            row=0, column=0, padx=(4, 8), pady=6, sticky="w",
-        )
-        ctk.CTkEntry(
-            section, textvariable=self._parent._openrouter_key_var, height=36,
-            corner_radius=10, border_color=BORDER, border_width=1,
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(family=FONT, size=12),
-            placeholder_text="sk-or-...",
-            show="•",  # Mask the key visually — same UX as cloud API key field.
-        ).grid(row=0, column=1, padx=4, pady=6, sticky="ew")
-        tonal_button(
-            section, text="Вставить",
-            command=self._paste_openrouter_key, width=100,
-        ).grid(row=0, column=2, padx=(4, 4), pady=6)
+        def _persist(key: str, _info: dict) -> None:
+            self._parent._config["openrouter_api_key"] = key
+            save_config(self._parent._config)
 
-        # Validate row — button + status label
-        tonal_button(
-            section, text="Проверить ключ",
-            command=self._validate_openrouter, width=140,
-        ).grid(row=1, column=0, padx=4, pady=6, sticky="w")
-        self._openrouter_status = label(section, "", anchor="w")
-        self._openrouter_status.grid(
-            row=1, column=1, columnspan=2, padx=(8, 4), pady=6, sticky="ew",
-        )
+        def _on_validate(key: str) -> dict:
+            # Lazy import — keeps tasks/openrouter_client (and transitively
+            # requests) off the dialog-construction path.
+            from tasks.openrouter_client import OpenRouterClient
+            client = OpenRouterClient(key)
+            try:
+                return client.validate_key()
+            finally:
+                client.close()
 
-        # Default model dropdown
+        def _format_success(info: dict) -> str:
+            balance = info.get("balance_remaining")
+            if balance is not None:
+                return f"✓ Активен (баланс: ${balance:.2f})"
+            return f"✓ Активен ({info.get('label') or 'unlimited'})"
+
+        refs = api_key_row(
+            section,
+            label_text="API ключ",
+            key_var=self._parent._openrouter_key_var,
+            placeholder="sk-or-...",
+            on_validate=_on_validate,
+            on_key_persisted=_persist,
+            format_success=_format_success,
+            row=0,
+        )
+        self._openrouter_status = refs["status"]
+
+        # Default model dropdown (unchanged — separate row below the key)
         label(section, "Модель по умолчанию").grid(
             row=2, column=0, padx=(4, 8), pady=6, sticky="w",
         )
@@ -398,21 +405,6 @@ class SettingsDialog(ctk.CTkToplevel):
             section, self._parent._openrouter_default_model_var,
             list(_CURATED_MODELS.keys()),
         ).grid(row=2, column=1, columnspan=2, padx=4, pady=6, sticky="ew")
-
-    def _paste_openrouter_key(self) -> None:
-        """Paste-from-clipboard helper. Mirrors HF Token paste pattern but
-        the handler lives on the dialog rather than App since the var is
-        OpenRouter-specific (not yet used outside the Settings flow)."""
-        try:
-            text = self.clipboard_get().strip()
-            self._parent._openrouter_key_var.set(text)
-            if text:
-                self._parent._config["openrouter_api_key"] = text
-                save_config(self._parent._config)
-        except tk.TclError:
-            return  # empty clipboard / non-text — silent
-        except OSError as e:
-            _logger.warning("Failed to persist OpenRouter key: %s", e)
 
     # ── Linear section (Phase 6.0 Task 15) ────────────────────────────
 
@@ -628,65 +620,6 @@ class SettingsDialog(ctk.CTkToplevel):
                 base += f" ({', '.join(sample)})"
             self.after(0, self._glide_status.configure, {
                 "text": base, "text_color": GREEN,
-            })
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _validate_openrouter(self) -> None:
-        """Make a single GET /auth/key. Show balance on success, error on fail.
-
-        Runs in a worker thread to keep the dialog responsive on slow networks
-        (the call is bounded by a 10s timeout inside the client). UI updates
-        from the worker are marshalled back via ``self.after(0, ...)``.
-        Saves the key to config.json only on success — typing intermediate
-        garbage doesn't leak into persistent state.
-        """
-        key = self._parent._openrouter_key_var.get().strip()
-        if not key:
-            self._openrouter_status.configure(
-                text="Введите API ключ", text_color=RED,
-            )
-            return
-
-        self._openrouter_status.configure(
-            text="Проверка...", text_color=TEXT_SECONDARY,
-        )
-
-        def worker():
-            try:
-                # Imported lazily to avoid pulling tasks/openrouter_client (and
-                # thus `requests`) at Settings-dialog construction time.
-                from tasks.openrouter_client import (
-                    OpenRouterClient,
-                    OpenRouterError,
-                )
-                client = OpenRouterClient(key)
-                try:
-                    info = client.validate_key()
-                finally:
-                    client.close()
-            except OpenRouterError as e:
-                self.after(0, self._openrouter_status.configure, {
-                    "text": f"✗ {e}", "text_color": RED,
-                })
-                return
-            except Exception as e:  # belt-and-braces: anything else surfaces too
-                self.after(0, self._openrouter_status.configure, {
-                    "text": f"✗ {e}", "text_color": RED,
-                })
-                return
-
-            # Key works — persist it.
-            self._parent._config["openrouter_api_key"] = key
-            save_config(self._parent._config)
-
-            balance = info.get("balance_remaining")
-            if balance is not None:
-                msg = f"✓ Активен (баланс: ${balance:.2f})"
-            else:
-                msg = f"✓ Активен ({info.get('label') or 'unlimited'})"
-            self.after(0, self._openrouter_status.configure, {
-                "text": msg, "text_color": GREEN,
             })
 
         threading.Thread(target=worker, daemon=True).start()
