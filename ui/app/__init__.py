@@ -89,14 +89,30 @@ class App(
                 # blocking app startup over a cosmetic icon.
                 pass
 
-        # Maximize the window on launch — modern desktop apps (Obsidian,
-        # VS Code, Slack) all open maximized. 'zoomed' is the Tk equivalent
-        # on Windows; the un-maximize size falls back to self.geometry above.
-        # macOS/Linux Tk may not recognise 'zoomed' — silently fall back to
-        # the geometry default instead of crashing.
+        # True fullscreen on launch (user request 2026-05-28). Unlike
+        # state('zoomed') which only covers the working area (Windows taskbar
+        # remains visible, title bar stays), `-fullscreen` covers EVERY pixel
+        # of the screen — kiosk-style, like a media player. Trade-offs:
+        #   - No title bar = no X button (must close via Alt+F4 / Esc)
+        #   - Windows taskbar hidden (can't visually switch to Chrome/Slack)
+        #   - Alt+Tab still works (lets user switch away without exiting)
+        # Bind Escape to toggle off — standard UX in fullscreen apps; without
+        # this, a confused user is trapped. F11 toggles for ergonomics.
         try:
-            self.state("zoomed")
+            self.attributes("-fullscreen", True)
+            self.bind(
+                "<Escape>",
+                lambda _e: self.attributes("-fullscreen", False),
+            )
+            self.bind(
+                "<F11>",
+                lambda _e: self.attributes(
+                    "-fullscreen", not self.attributes("-fullscreen"),
+                ),
+            )
         except tk.TclError:
+            # Some Tk variants (older Linux WMs, exotic remote-desktop setups)
+            # reject -fullscreen — silent fall-back to geometry default.
             pass
         # Apply the saved appearance mode BEFORE constructing widgets so
         # tuple colors in theme.py resolve to the right palette on first
