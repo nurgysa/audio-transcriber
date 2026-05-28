@@ -877,7 +877,7 @@ class SettingsDialog(ctk.CTkToplevel):
                 result = run_backup(
                     auth=self._parent._gdrive_auth,
                     config=self._parent._config,
-                    history_dir="history",
+                    history_dir=get_meetings_dir(),
                     work_dir=work_dir,
                     on_status=_status,
                 )
