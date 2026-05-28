@@ -68,9 +68,9 @@ class App(
         super().__init__()
 
         self.title("Audio Transcriber")
-        # Generous default geometry — used when the user un-maximizes; minsize
-        # prevents collapsing the dialog content past the point where the
-        # extract-tasks split-pane (180 task list + 360 form + padding) fits.
+        # Geometry will be overwritten by the fullscreen setup below — kept
+        # only as the un-fullscreen fallback if the user hits Esc/F11 then
+        # the window manager needs a reasonable default size to revert to.
         self.geometry("1280x800")
         self.minsize(960, 680)
         # Set the window title-bar icon. CustomTkinter sets its own default
@@ -89,49 +89,72 @@ class App(
                 # blocking app startup over a cosmetic icon.
                 pass
 
-        # True fullscreen on launch (user request 2026-05-28). Unlike
-        # state('zoomed') which only covers the working area (Windows taskbar
-        # remains visible, title bar stays), `-fullscreen` covers EVERY pixel
-        # of the screen — kiosk-style, like a media player.
+        # Kiosk-style fullscreen on launch (user request 2026-05-28).
         #
-        # Belt-and-suspenders: state('zoomed') applies IMMEDIATELY (max area
-        # with title bar visible), then `-fullscreen` deferred via after()
-        # kicks in on the next event-loop tick. The defer is needed because
-        # CustomTkinter's super().__init__() does its own WM manipulation
-        # that overrides attributes set in-line during __init__ — verified
-        # live on 2026-05-28 where setting -fullscreen directly produced a
-        # 1280×800 window instead of true fullscreen.
+        # Why brute-force geometry+overrideredirect instead of attributes(
+        # '-fullscreen', True): both state('zoomed') and attributes(
+        # '-fullscreen') were verified live on the maintainer's Windows 10
+        # dev machine to silently NOT take effect — likely a CustomTkinter
+        # init-order race that overrides our calls. Direct geometry assign
+        # + overrideredirect deterministically wins because we tell Tk
+        # exactly what pixels to fill.
+        #
+        # Approach:
+        #   1. Read screen dimensions via winfo_screen*()
+        #   2. Set geometry to {screen_w}x{screen_h}+0+0 (cover everything)
+        #   3. overrideredirect(True) — strip OS window chrome (no title bar,
+        #      no taskbar entry, no Alt-Tab thumbnail). Combined with the
+        #      Extract dialog's same treatment (commit 762e96a), the entire
+        #      app feels like one unified inline workspace.
+        #   4. Esc binding restores normal window (overrideredirect off +
+        #      smaller geometry) so user isn't trapped.
         #
         # Trade-offs (intentional for kiosk UX):
-        #   - No title bar = no X button (close via Alt+F4 / Esc / F11)
-        #   - Windows taskbar hidden (Alt+Tab still works for switching)
+        #   - No title bar = no X button
+        #   - No taskbar entry on Windows (Alt+Tab keyboard still works)
+        #   - The 1280x800 geometry above is the un-fullscreen fallback
         try:
-            self.state("zoomed")
+            screen_w = self.winfo_screenwidth()
+            screen_h = self.winfo_screenheight()
+            self.geometry(f"{screen_w}x{screen_h}+0+0")
+            self.overrideredirect(True)
         except tk.TclError:
-            pass
-
-        def _go_fullscreen() -> None:
+            # Some exotic WMs reject overrideredirect — fall back to a
+            # regular maximized window via state('zoomed').
             try:
-                self.attributes("-fullscreen", True)
+                self.state("zoomed")
             except tk.TclError:
                 pass
 
-        # 50ms gives CustomTkinter + WM time to settle their own state
-        # before we apply our attribute. after(0)/after_idle also works
-        # but races more often on slow disk / cold-start startups.
-        self.after(50, _go_fullscreen)
+        def _exit_fullscreen(_event=None) -> None:
+            """Restore normal window: re-enable WM chrome + medium geometry."""
+            try:
+                self.overrideredirect(False)
+                self.geometry("1280x800")
+            except tk.TclError:
+                pass
 
-        # Bind escape hatches so user isn't trapped — standard fullscreen UX.
-        self.bind(
-            "<Escape>",
-            lambda _e: self.attributes("-fullscreen", False),
-        )
-        self.bind(
-            "<F11>",
-            lambda _e: self.attributes(
-                "-fullscreen", not self.attributes("-fullscreen"),
-            ),
-        )
+        def _toggle_fullscreen(_event=None) -> None:
+            try:
+                currently_borderless = bool(self.overrideredirect())
+            except tk.TclError:
+                currently_borderless = False
+            if currently_borderless:
+                _exit_fullscreen()
+            else:
+                try:
+                    self.geometry(
+                        f"{self.winfo_screenwidth()}x"
+                        f"{self.winfo_screenheight()}+0+0"
+                    )
+                    self.overrideredirect(True)
+                except tk.TclError:
+                    pass
+
+        # Esc → exit fullscreen, F11 → toggle. Standard kiosk UX so the
+        # user can grab API keys from browser etc. without being trapped.
+        self.bind("<Escape>", _exit_fullscreen)
+        self.bind("<F11>", _toggle_fullscreen)
         # Apply the saved appearance mode BEFORE constructing widgets so
         # tuple colors in theme.py resolve to the right palette on first
         # paint. Default "system" follows the OS setting. Persisted via
