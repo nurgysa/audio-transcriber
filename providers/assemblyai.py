@@ -178,18 +178,33 @@ class AssemblyAIProvider(TranscriptionProvider):
         body: dict = {
             "audio_url": audio_url,
             "speaker_labels": bool(options.diarize),
+            # AssemblyAI made speech_models required in 2026-05 (the previous
+            # singular `speech_model` field was deprecated — see
+            # https://www.assemblyai.com/docs/api-reference/transcripts/submit
+            # «This parameter has been replaced with the `speech_models`
+            # parameter.»). Must be a non-empty list of {"universal-3-pro",
+            # "universal-2"}. We default to universal-2 (the multilingual
+            # 99-language model — includes Kazakh, drives both single-language
+            # and "mixed" code-switching paths below). universal-3-pro is the
+            # newer/pricier alternative — defer to a Settings opt-in.
+            "speech_models": ["universal-2"],
         }
-        # Language handling:
-        #   "mixed" → multilingual ASR: enable per-file language_detection and
-        #   switch to Universal-2 ('universal'), the 99-language model that
-        #   includes Kazakh. Verified against AssemblyAI docs on 2026-05-21:
-        #   https://www.assemblyai.com/docs/pre-recorded-audio/language-detection
-        #   https://assemblyai.github.io/assemblyai-node-sdk/types/Transcript.html
+        # Language handling (Universal-2 is multilingual, so the model itself
+        # is the same across all branches — only the routing differs):
+        #   "mixed" → constrain autodetect to {kk, ru, en} + enable
+        #     code_switching so AssemblyAI segments per-utterance and routes
+        #     each to the right language. Without expected_languages the
+        #     autodetect picks from all 99 supported languages and frequently
+        #     mis-routes Kazakh → Azerbaijani (close Turkic neighbours, common
+        #     on short clips) — verified live on 2026-05-28 dev smoke.
         #   Explicit code (kk/ru/en) → force that single language.
-        #   None → auto-detect a single dominant language.
+        #   None → auto-detect a single dominant language across all 99.
         if options.language == "mixed":
             body["language_detection"] = True
-            body["speech_model"] = "universal"
+            body["language_detection_options"] = {
+                "expected_languages": ["kk", "ru", "en"],
+                "code_switching": True,
+            }
         elif options.language:
             body["language_code"] = options.language
         else:
