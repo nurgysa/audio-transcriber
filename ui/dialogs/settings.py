@@ -80,25 +80,44 @@ class SettingsDialog(ctk.CTkToplevel):
             text_color=TEXT_PRIMARY,
         ).grid(row=0, column=0, padx=20, pady=12)
 
-        # --- Scrollable content ---
-        # CTkScrollableFrame so the dialog gracefully handles future settings
-        # additions without forcing geometry growth. Current contents already
-        # fit at 680px height; the scrollbar is invisible until needed.
-        body = ctk.CTkScrollableFrame(
-            self, fg_color="transparent", corner_radius=0,
+        # --- Tab view ---
+        # CTkTabview inherits Light/Dark from the theme palette automatically
+        # (unlike ttk.Notebook which needs manual ttk.Style for each mode).
+        self._tabview = ctk.CTkTabview(
+            self,
+            fg_color="transparent",
+            segmented_button_fg_color=SURFACE,
+            segmented_button_selected_color=BLUE,
+            segmented_button_selected_hover_color=BLUE_DIM,
+            segmented_button_unselected_color=SURFACE,
+            text_color=TEXT_PRIMARY,
         )
-        body.grid(row=1, column=0, padx=12, pady=(8, 4), sticky="nsew")
-        body.grid_columnconfigure(0, weight=1)
+        self._tabview.grid(row=1, column=0, padx=12, pady=(8, 4), sticky="nsew")
 
-        self._build_appearance_section(body)
-        self._build_transcription_section(body)
-        self._build_audio_section(body)
-        self._build_cloud_section(body)
-        self._build_dictionaries_section(body)
-        self._build_openrouter_section(body)
-        self._build_linear_section(body)
-        self._build_glide_section(body)
-        self._build_gdrive_section(body)
+        tab_transcription = self._tabview.add("Транскрипция")
+        tab_integrations = self._tabview.add("Интеграции")
+        tab_backup = self._tabview.add("Резервная копия")
+
+        for tab in (tab_transcription, tab_integrations, tab_backup):
+            tab.grid_columnconfigure(0, weight=1)
+
+        # Default tab = where the STT key lives. First-run client lands here.
+        self._tabview.set("Транскрипция")
+
+        # Tab 1 «Транскрипция» — core loop (minimal sufficient set)
+        self._build_appearance_section(tab_transcription)
+        self._build_transcription_section(tab_transcription)
+        self._build_audio_section(tab_transcription)
+        self._build_cloud_section(tab_transcription)
+        self._build_dictionaries_section(tab_transcription)
+
+        # Tab 2 «Интеграции» — LLM-side optional extras
+        self._build_openrouter_section(tab_integrations)
+        self._build_linear_section(tab_integrations)
+        self._build_glide_section(tab_integrations)
+
+        # Tab 3 «Резервная копия» — independent housekeeping
+        self._build_gdrive_section(tab_backup)
 
         # Reactive trace wiring for the first-run banner is added in
         # Task 7 of the redesign plan — see
@@ -308,7 +327,7 @@ class SettingsDialog(ctk.CTkToplevel):
         + Проверить + status). Default-model dropdown stays as a separate
         row below.
         """
-        section = self._section_card(parent, "OpenRouter", row=5)
+        section = self._section_card(parent, "OpenRouter", row=0)
 
         def _persist(key: str, _info: dict) -> None:
             self._parent._config["openrouter_api_key"] = key
@@ -359,7 +378,7 @@ class SettingsDialog(ctk.CTkToplevel):
         enable-checkbox + API key handling delegated to api_key_row.
         No team picker here — that's per-run in ExtractTasksDialog.
         """
-        section = self._section_card(parent, "Linear", row=6)
+        section = self._section_card(parent, "Linear", row=1)
 
         def _persist(key: str, _info: dict) -> None:
             self._parent._config["linear_api_key"] = key
@@ -398,7 +417,7 @@ class SettingsDialog(ctk.CTkToplevel):
         Mirrors the Linear section pattern (enable-checkbox + validate
         through api_key_row).
         """
-        section = self._section_card(parent, "Glide", row=7)
+        section = self._section_card(parent, "Glide", row=2)
 
         def _persist(key: str, _info: dict) -> None:
             self._parent._config["glide_api_key"] = key
@@ -451,7 +470,7 @@ class SettingsDialog(ctk.CTkToplevel):
         via `self.after(0, ...)` so widget updates happen on the main
         thread. Mirrors the _validate_openrouter pattern.
         """
-        section = self._section_card(parent, "Google Drive", row=8)
+        section = self._section_card(parent, "Google Drive", row=0)
 
         # Status row — badge bound to the App's _gdrive_status_var.
         label(section, "Статус").grid(

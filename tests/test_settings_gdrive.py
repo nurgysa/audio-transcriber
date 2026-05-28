@@ -29,8 +29,9 @@ def test_settings_dialog_has_gdrive_section_builder():
     it in the constructor's section-build dispatch."""
     src = _read(os.path.join("ui", "dialogs", "settings.py"))
     assert "def _build_gdrive_section(self, parent)" in src
-    assert "self._build_gdrive_section(body)" in src, (
-        "Section method exists but is never called from __init__ dispatch"
+    assert "self._build_gdrive_section(tab_backup)" in src, (
+        "Section method exists but is never called from __init__ dispatch "
+        "(expected parent=tab_backup after the 2026-05-28 tabview redesign)"
     )
 
 
