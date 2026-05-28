@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import tkinter as tk
 from typing import TYPE_CHECKING
 
 import customtkinter as ctk
@@ -10,7 +11,7 @@ import customtkinter as ctk
 from logging_setup import init_logging
 from recorder import Recorder
 from theme import BG
-from utils import load_config, save_config
+from utils import get_app_icon_path, load_config, save_config
 
 # Submodule re-exports. ``main`` lives in ``.main_entry`` so the repo-root
 # ``app.py`` (the faulthandler bootstrap) keeps working through its existing
@@ -69,6 +70,21 @@ class App(
         self.title("Audio Transcriber")
         self.geometry("780x700")
         self.minsize(680, 600)
+        # Set the window title-bar icon. CustomTkinter sets its own default
+        # icon during super().__init__() so we must call iconbitmap AFTER.
+        # The .exe-embedded icon (Explorer/Taskbar) is set separately via
+        # audio_transcriber.spec EXE(icon=...). Silently skip if the .ico
+        # file is absent — dev runs without `python scripts/gen_icon.py`
+        # shouldn't crash startup.
+        _icon_path = get_app_icon_path()
+        if _icon_path:
+            try:
+                self.iconbitmap(_icon_path)
+            except tk.TclError:
+                # iconbitmap can fail on some WSL/Linux/Wine setups even
+                # when the file exists — fall back silently rather than
+                # blocking app startup over a cosmetic icon.
+                pass
         # Apply the saved appearance mode BEFORE constructing widgets so
         # tuple colors in theme.py resolve to the right palette on first
         # paint. Default "system" follows the OS setting. Persisted via
