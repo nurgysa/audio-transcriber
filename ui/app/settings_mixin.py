@@ -19,8 +19,8 @@ Mixin contract: relies on App providing ``self._config`` (mutable dict),
 / ``self._appearance_var`` / ``self._gdrive_*`` families,
 ``self._transcriber`` (lazy, never invalidated in cloud-only mode),
 ``self._audio_path``, ``self._lbl_file``, ``self._btn_transcribe``, and
-the dialog refs ``self._settings_dialog`` / ``self._monitor_dialog`` /
-``self._cutter`` (used by the live appearance-mode switch).
+the dialog refs ``self._settings_dialog`` / ``self._cutter`` (used by
+the live appearance-mode switch).
 """
 from __future__ import annotations
 
@@ -205,39 +205,12 @@ class SettingsMixin:
 
         # Notify Canvas-using children — plain tk.Canvas doesn't react
         # to set_appearance_mode automatically.
-        if self._monitor_dialog is not None:
-            try:
-                self._monitor_dialog._apply_theme()
-            except tk.TclError:
-                pass
         if self._cutter is not None:
             try:
                 if self._cutter.winfo_exists():
                     self._cutter._apply_theme()
             except tk.TclError:
                 pass
-
-    def _paste_cloud_api_key(self) -> None:
-        """Paste-from-clipboard helper scoped to the cloud API key field.
-        Persists into the per-provider dict under the *currently selected*
-        provider name.
-
-        TclError = empty clipboard or non-text content (silent — user just
-        clicked Paste without anything to paste). OSError = config save
-        failed (real problem: key won't persist across launches).
-        """
-        try:
-            text = self.clipboard_get().strip()
-            self._cloud_api_key_var.set(text)
-            if text:
-                provider = self._cloud_provider_var.get()
-                self._cloud_api_keys[provider] = text
-                self._config["cloud_api_keys"] = self._cloud_api_keys
-                save_config(self._config)
-        except tk.TclError:
-            return
-        except OSError as e:
-            logger.warning("Failed to persist cloud API key to config.json: %s", e)
 
     def _select_file(self):
         path = filedialog.askopenfilename(

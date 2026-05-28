@@ -182,8 +182,8 @@ def build_ui(app):
     )
     # Visible API-key field — populated from the per-provider dict
     # for whichever provider is currently selected. _on_cloud_provider_changed
-    # swaps it on dropdown change; _paste_cloud_api_key writes it back
-    # into the dict for the active provider.
+    # swaps it on dropdown change. Lazy save to the dict happens at
+    # transcribe time (transcription_mixin _on_transcribe_clicked).
     app._cloud_api_key_var = ctk.StringVar(
         value=app._cloud_api_keys.get(
             app._cloud_provider_var.get(), ""
@@ -297,20 +297,11 @@ def build_ui(app):
     )
     app._spk_count_menu.grid(row=0, column=2, padx=(0, 12), pady=14, sticky="w")
 
-    # Monitor button: opens the non-modal system stats window.
-    # Sits to the LEFT of Settings — same row, two clickable buttons
-    # at the right edge of the run card.
-    app._btn_monitor = tonal_button(
-        run_card, text="Монитор",
-        command=app._open_monitor_dialog, width=110,
-    )
-    app._btn_monitor.grid(row=0, column=3, padx=(0, 8), pady=14, sticky="e")
-
     app._btn_settings = tonal_button(
         run_card, text="Настройки",
         command=app._open_settings_dialog, width=140,
     )
-    app._btn_settings.grid(row=0, column=4, padx=(0, 16), pady=14, sticky="e")
+    app._btn_settings.grid(row=0, column=3, padx=(0, 16), pady=14, sticky="e")
 
     # --- Progress bar ---
     app._progress = ctk.CTkProgressBar(

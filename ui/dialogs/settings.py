@@ -29,7 +29,6 @@ from theme import (
     BORDER,
     FONT,
     GREEN,
-    INPUT_BG,
     RED,
     SURFACE,
     TEXT_PRIMARY,
@@ -37,6 +36,7 @@ from theme import (
 )
 from ui.app.constants import LANGUAGES
 from ui.widgets import (
+    api_key_row,
     card,
     label,
     option_menu,
@@ -61,7 +61,9 @@ class SettingsDialog(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Настройки")
-        self.geometry("520x680")
+        # 640 wide — fits the 4-widget API-key row (label + entry + 👁 +
+        # Проверить + status) without status-label truncation at 520.
+        self.geometry("640x680")
         self.configure(fg_color=BG)
         self.transient(parent)
         self.grab_set()
@@ -69,80 +71,155 @@ class SettingsDialog(ctk.CTkToplevel):
         self._parent = parent  # App instance — we read its StringVars
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        # row 0=header, 1=banner (hidden until needed), 2=tabview (expands),
+        # 3=footer. Only the tabview row gets weight so the banner stays at
+        # natural height and the footer pins to the bottom.
+        self.grid_rowconfigure(2, weight=1)
 
-        # --- Header ---
-        header = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=48)
+        # --- Header (thin divider strip — title is in the OS title bar) ---
+        # We intentionally do NOT duplicate "Настройки" as an in-body H1:
+        # the OS title bar already shows it via self.title("Настройки"),
+        # and the inline label was a leftover from pre-redesign layout.
+        header = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=8)
         header.grid(row=0, column=0, sticky="ew")
-        ctk.CTkLabel(
-            header, text="Настройки",
-            font=ctk.CTkFont(family=FONT, size=16, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).grid(row=0, column=0, padx=20, pady=12)
 
-        # --- Scrollable content ---
-        # CTkScrollableFrame so the dialog gracefully handles future settings
-        # additions without forcing geometry growth. Current contents already
-        # fit at 680px height; the scrollbar is invisible until needed.
-        body = ctk.CTkScrollableFrame(
-            self, fg_color="transparent", corner_radius=0,
+        # --- First-run status banner (between header and tabs) ---
+        # Clickable: jumps to the relevant tab + focuses the relevant widget.
+        # State machine in _update_banner; click dispatch in _handle_banner_click.
+        # Default hidden — _update_banner shows it when a condition fires.
+        self._banner_action: str | None = None
+        self._banner = ctk.CTkButton(
+            self,
+            text="",
+            command=self._handle_banner_click,
+            fg_color="transparent",
+            hover_color=SURFACE,
+            text_color=RED,
+            anchor="w",
+            font=ctk.CTkFont(family=FONT, size=12),
+            corner_radius=0,
+            height=32,
         )
-        body.grid(row=1, column=0, padx=12, pady=(8, 4), sticky="nsew")
-        body.grid_columnconfigure(0, weight=1)
+        self._banner.grid(row=1, column=0, padx=12, pady=(0, 4), sticky="ew")
+        self._banner.grid_remove()
 
-        self._build_appearance_section(body)
-        self._build_transcription_section(body)
-        self._build_audio_section(body)
-        self._build_cloud_section(body)
-        self._build_dictionaries_section(body)
-        self._build_openrouter_section(body)
-        self._build_linear_section(body)
-        self._build_glide_section(body)
-        self._build_gdrive_section(body)
+        # --- Tab view ---
+        # CTkTabview inherits Light/Dark from the theme palette automatically
+        # (unlike ttk.Notebook which needs manual ttk.Style for each mode).
+        self._tabview = ctk.CTkTabview(
+            self,
+            fg_color="transparent",
+            segmented_button_fg_color=SURFACE,
+            segmented_button_selected_color=BLUE,
+            segmented_button_selected_hover_color=BLUE_DIM,
+            segmented_button_unselected_color=SURFACE,
+            text_color=TEXT_PRIMARY,
+        )
+        self._tabview.grid(row=2, column=0, padx=12, pady=(4, 4), sticky="nsew")
 
-        # Wire reactive warning: fires whenever language or cloud provider
-        # changes so the label stays in sync without requiring a Save button.
-        # The traced StringVars live on `self._parent` (App) and outlive the
-        # dialog, so the trace tokens must be kept and unregistered in
-        # destroy() — otherwise reopening the dialog stacks duplicate
-        # callbacks that fire on already-destroyed dialogs and raise TclError.
+        tab_transcription = self._tabview.add("Транскрипция")
+        tab_integrations = self._tabview.add("Интеграции")
+        tab_backup = self._tabview.add("Резервная копия")
+
+        # Each tab wraps its content in a CTkScrollableFrame so taller
+        # sections (Tab 1 has 5) don't clip when the dialog is shrunk.
+        # The tab itself owns the scrollbar; sections grid into the
+        # inner scroll frame at rows 0..N.
+        for tab in (tab_transcription, tab_integrations, tab_backup):
+            tab.grid_columnconfigure(0, weight=1)
+            tab.grid_rowconfigure(0, weight=1)
+
+        scroll_transcription = ctk.CTkScrollableFrame(
+            tab_transcription, fg_color="transparent", corner_radius=0,
+        )
+        scroll_transcription.grid(row=0, column=0, sticky="nsew")
+        scroll_transcription.grid_columnconfigure(0, weight=1)
+
+        scroll_integrations = ctk.CTkScrollableFrame(
+            tab_integrations, fg_color="transparent", corner_radius=0,
+        )
+        scroll_integrations.grid(row=0, column=0, sticky="nsew")
+        scroll_integrations.grid_columnconfigure(0, weight=1)
+
+        scroll_backup = ctk.CTkScrollableFrame(
+            tab_backup, fg_color="transparent", corner_radius=0,
+        )
+        scroll_backup.grid(row=0, column=0, sticky="nsew")
+        scroll_backup.grid_columnconfigure(0, weight=1)
+
+        # Default tab = where the STT key lives. First-run client lands here.
+        self._tabview.set("Транскрипция")
+
+        # Tab 1 «Транскрипция» — core loop (minimal sufficient set)
+        self._build_appearance_section(scroll_transcription)
+        self._build_transcription_section(scroll_transcription)
+        self._build_audio_section(scroll_transcription)
+        self._build_cloud_section(scroll_transcription)
+        self._build_dictionaries_section(scroll_transcription)
+
+        # Tab 2 «Интеграции» — LLM-side optional extras
+        self._build_openrouter_section(scroll_integrations)
+        self._build_linear_section(scroll_integrations)
+        self._build_glide_section(scroll_integrations)
+
+        # Tab 3 «Резервная копия» — independent housekeeping
+        self._build_gdrive_section(scroll_backup)
+
+        # Reactive banner: subscribe to the three vars whose values
+        # determine the banner state. Tokens kept on self so destroy()
+        # can unregister them (PR #25 pattern, extended).
         self._trace_lang = self._parent._lang_var.trace_add(
-            "write", self._update_mixed_warning,
+            "write", self._update_banner,
         )
         self._trace_provider = self._parent._cloud_provider_var.trace_add(
-            "write", self._update_mixed_warning,
+            "write", self._update_banner,
         )
-        # Run once immediately so an already-loaded incompatible config
-        # (e.g. lang=mixed + provider=Deepgram from config.json) shows the
-        # warning as soon as the dialog opens — not only after the user
-        # interacts with a dropdown.
-        self._update_mixed_warning()
+        self._trace_api_key = self._parent._cloud_api_key_var.trace_add(
+            "write", self._update_banner,
+        )
+        # Run once at end of __init__ so an already-loaded config (empty
+        # STT key, mixed lang + Deepgram, etc.) surfaces the banner
+        # immediately — not only after the first interaction.
+        self._update_banner()
 
         # --- Footer ---
+        # "Закрыть" is a cancel action, not the primary CTA — use tonal_button
+        # so visual weight matches actual importance.
         footer = ctk.CTkFrame(self, fg_color="transparent")
-        footer.grid(row=2, column=0, padx=16, pady=(4, 14), sticky="ew")
+        footer.grid(row=3, column=0, padx=16, pady=(4, 14), sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
-        primary_button(
+        tonal_button(
             footer, text="Закрыть", command=self.destroy, width=120,
         ).grid(row=0, column=0, sticky="e")
+
+        # Esc closes — standard modal-dialog convention.
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+        # CTkToplevel quirk: immediate iconbitmap() is silently dropped if
+        # the WM hasn't finished its handshake. Defer 200 ms so the call
+        # lands after Windows has assigned the WM_CLASS / icon slot.
+        self.after(200, self._apply_dialog_icon)
 
     def destroy(self) -> None:
         """Remove app-level Var traces before the Toplevel is torn down.
 
-        ``_lang_var`` and ``_cloud_provider_var`` live on the App and outlive
-        the dialog. Without cleanup, reopening Settings registers a second
-        trace pointing at the previous (destroyed) dialog's bound method, and
-        the next dropdown change fires both — the stale one raises TclError
-        ("invalid command name") on the destroyed widget, and the destroyed
-        dialog instance is held alive by the trace, leaking memory.
+        Var trace tokens live on the App and outlive the dialog. Without
+        cleanup, reopening Settings registers a second trace pointing at
+        the previous (destroyed) dialog's bound method — fires both, the
+        stale one raises TclError on the destroyed widget, and the destroyed
+        dialog instance is held alive by the trace (memory leak).
 
         Wrapped in try/except TclError because the underlying Var may have
-        already been GC'd (parent App teardown ordering) — in that case there
-        is nothing left to unregister.
+        already been GC'd during parent teardown.
+
+        Task 7 of the redesign plan adds new trace tokens for the global
+        banner. Each token is opt-in via getattr — this loop accepts both
+        pre-Task-7 (empty) and post-Task-7 (populated) states.
         """
         for var, token in (
             (self._parent._lang_var, getattr(self, "_trace_lang", None)),
             (self._parent._cloud_provider_var, getattr(self, "_trace_provider", None)),
+            (self._parent._cloud_api_key_var, getattr(self, "_trace_api_key", None)),
         ):
             if token is not None:
                 try:
@@ -151,6 +228,93 @@ class SettingsDialog(ctk.CTkToplevel):
                     # Var already destroyed during parent teardown — safe to ignore.
                     pass
         super().destroy()
+
+    def _apply_dialog_icon(self) -> None:
+        """Apply the audio_transcriber.ico to this Toplevel.
+
+        Called via `self.after(200, ...)` to work around the CTkToplevel
+        WM-handshake race that silently drops immediate `iconbitmap()` calls
+        on Windows. The 200 ms delay is empirically sufficient for all
+        Windows 10/11 builds we test on.
+
+        Swallows TclError + ImportError + FileNotFoundError — on
+        Linux/macOS .ico is unsupported, but the dialog still opens fine.
+        """
+        try:
+            from utils import get_app_icon_path
+            icon_path = get_app_icon_path()
+            if icon_path:
+                self.iconbitmap(icon_path)
+        except (tk.TclError, ImportError, FileNotFoundError):
+            pass
+
+    # ── First-run banner state machine + click handlers ────────────────
+
+    def _update_banner(self, *_args) -> None:
+        """Show banner with the highest-priority actionable issue.
+
+        Priority (top match wins):
+          1. Cloud STT key empty → red "Введите ключ" + action=stt
+          2. Mixed language + provider doesn't support it → red warning + action=lang
+          3. No issue → hide banner (silence-is-OK)
+
+        Subscribed to `_cloud_api_key_var`, `_lang_var`, `_cloud_provider_var`
+        via `trace_add("write", ...)`. Also called once at the end of
+        `__init__` so a pre-loaded config that already has the issue
+        surfaces the banner immediately.
+        """
+        cloud_key = (self._parent._cloud_api_key_var.get() or "").strip()
+        if not cloud_key:
+            self._banner.configure(
+                text="⚠ Введите ключ провайдера STT (вкладка «Транскрипция») →",
+                text_color=RED,
+            )
+            self._banner_action = "stt"
+            self._banner.grid()
+            return
+
+        lang_label = self._parent._lang_var.get()
+        lang_code = LANGUAGES.get(lang_label)
+        if lang_code == "mixed":
+            provider_name = self._parent._cloud_provider_var.get()
+            provider_cls = PROVIDERS.get(provider_name)
+            if provider_cls is not None and not provider_cls.supports_mixed:
+                self._banner.configure(
+                    text=(
+                        f"⚠ {provider_name} не поддерживает «Смешанный "
+                        f"(KZ+RU+EN)». Выберите другой провайдер или язык →"
+                    ),
+                    text_color=RED,
+                )
+                self._banner_action = "lang"
+                self._banner.grid()
+                return
+
+        # No actionable issue → hide.
+        self._banner.grid_remove()
+        self._banner_action = None
+
+    def _handle_banner_click(self) -> None:
+        """Banner is clickable — dispatch by current action."""
+        if self._banner_action == "stt":
+            self._jump_to_stt()
+        elif self._banner_action == "lang":
+            self._jump_to_lang()
+
+    def _jump_to_stt(self) -> None:
+        """Switch to Транскрипция tab + focus the STT API key entry."""
+        self._tabview.set("Транскрипция")
+        # _cloud_api_key_entry is captured in _build_cloud_section.
+        entry = getattr(self, "_cloud_api_key_entry", None)
+        if entry is not None:
+            entry.focus_set()
+
+    def _jump_to_lang(self) -> None:
+        """Switch to Транскрипция tab + focus the Язык dropdown."""
+        self._tabview.set("Транскрипция")
+        menu = getattr(self, "_lang_menu", None)
+        if menu is not None:
+            menu.focus_set()
 
     def _section_card(self, parent, title: str, row: int) -> ctk.CTkFrame:
         """A titled card. Returns the inner content frame (already gridded)."""
@@ -191,47 +355,12 @@ class SettingsDialog(ctk.CTkToplevel):
         section = self._section_card(parent, "Транскрипция", row=1)
 
         label(section, "Язык").grid(row=0, column=0, padx=(4, 8), pady=6, sticky="w")
-        option_menu(
+        # Capture ref so the banner's _jump_to_lang can focus_set() it.
+        self._lang_menu = option_menu(
             section, self._parent._lang_var, list(LANGUAGES.keys()),
             command=self._parent._on_language_changed,
-        ).grid(row=0, column=1, padx=4, pady=6, sticky="w")
-
-    def _update_mixed_warning(self, *_args) -> None:
-        """Show or hide the inline incompatibility warning in the cloud section.
-
-        Fires when either the language or cloud-provider StringVar changes, and
-        once at __init__ end to reflect a pre-loaded config state.
-
-        Shows a warning when:
-          - the selected language label resolves to code ``"mixed"``
-          - AND the active cloud provider has ``supports_mixed = False``
-            (class attribute, no instantiation required)
-
-        Currently the only provider with ``supports_mixed = False`` is Deepgram.
-        """
-        lang_label = self._parent._lang_var.get()
-        lang_code = LANGUAGES.get(lang_label)
-        if lang_code != "mixed":
-            self._mixed_warning.grid_remove()
-            return
-
-        provider_name = self._parent._cloud_provider_var.get()
-        provider_cls = PROVIDERS.get(provider_name)
-        if provider_cls is None:
-            self._mixed_warning.grid_remove()
-            return
-
-        if not provider_cls.supports_mixed:
-            self._mixed_warning.configure(
-                text=(
-                    f"⚠ {provider_name} не поддерживает "
-                    "«Смешанный (KZ+RU+EN)». "
-                    "Выбери другой провайдер или язык."
-                ),
-            )
-            self._mixed_warning.grid()
-        else:
-            self._mixed_warning.grid_remove()
+        )
+        self._lang_menu.grid(row=0, column=1, padx=4, pady=6, sticky="w")
 
     def _build_audio_section(self, parent) -> None:
         section = self._section_card(parent, "Аудио", row=2)
@@ -263,8 +392,17 @@ class SettingsDialog(ctk.CTkToplevel):
         )
 
     def _build_cloud_section(self, parent) -> None:
-        section = self._section_card(parent, "Транскрибация (cloud API)", row=3)
+        """Cloud STT provider + API key + privacy + pricing disclosure.
 
+        Key handling via api_key_row (no validate — Cloud STT validation
+        is deferred to a follow-up PR per the spec). Provider dropdown
+        stays as a separate row because its callback wires into the
+        first-run banner's mixed-lang condition. Captures
+        self._cloud_api_key_entry so the banner can focus_set() it.
+        """
+        section = self._section_card(parent, "Облачное распознавание", row=3)
+
+        # Provider dropdown
         label(section, "Провайдер").grid(
             row=0, column=0, padx=(4, 8), pady=6, sticky="w",
         )
@@ -273,46 +411,28 @@ class SettingsDialog(ctk.CTkToplevel):
             command=self._parent._on_cloud_provider_changed,
         ).grid(row=0, column=1, padx=4, pady=6, sticky="w")
 
-        # Inline warning shown when language=mixed AND the chosen provider
-        # has supports_mixed=False (currently only Deepgram). Initially
-        # hidden; _update_mixed_warning() toggles visibility reactively.
-        self._mixed_warning = ctk.CTkLabel(
-            section, text="",
-            font=ctk.CTkFont(family=FONT, size=11),
-            text_color=RED,
-            anchor="w",
-            wraplength=340,
+        # API key row — no validate (deferred). Capture entry ref so the
+        # global first-run banner can focus_set() it on click.
+        refs = api_key_row(
+            section,
+            label_text="API ключ",
+            key_var=self._parent._cloud_api_key_var,
+            placeholder="API ключ провайдера",
+            on_validate=None,
+            row=1,
         )
-        self._mixed_warning.grid(
-            row=1, column=0, columnspan=3, padx=4, pady=(0, 2), sticky="w",
-        )
-        self._mixed_warning.grid_remove()  # hidden until needed
+        self._cloud_api_key_entry = refs["entry"]
 
-        label(section, "API key").grid(
-            row=2, column=0, padx=(4, 8), pady=6, sticky="w",
-        )
-        ctk.CTkEntry(
-            section, textvariable=self._parent._cloud_api_key_var, height=36,
-            corner_radius=10, border_color=BORDER, border_width=1,
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(family=FONT, size=12),
-            placeholder_text="API ключ провайдера",
-            show="•",  # Mask the key visually — same UX as a password field.
-        ).grid(row=2, column=1, padx=4, pady=6, sticky="ew")
-        tonal_button(
-            section, text="Вставить",
-            command=self._parent._paste_cloud_api_key, width=100,
-        ).grid(row=2, column=2, padx=(4, 4), pady=6)
-
-        # Disclosure. Audio leaves the user's machine and ends up on a
-        # third-party server, which has privacy/compliance implications.
-        # Surfacing this in the cloud section is the cheapest mitigation.
+        # Disclosure: audio leaves the user's machine and ends up on a
+        # third-party server. Surfacing this in the cloud section is the
+        # cheapest mitigation. Placed AFTER the key field so it reads
+        # as context for the field it applies to.
         label(
             section,
             "⚠ Аудио загружается на сервер провайдера. "
             "Не используй для конфиденциальных записей.",
             anchor="w",
-        ).grid(row=3, column=0, columnspan=3, padx=4, pady=(2, 6), sticky="w")
+        ).grid(row=3, column=0, columnspan=4, padx=4, pady=(2, 6), sticky="w")
         # Static price summary. Cheapest with diarization first.
         label(
             section,
@@ -320,7 +440,7 @@ class SettingsDialog(ctk.CTkToplevel):
             "Deepgram ~$0.43/ч • Gladia ~$0.61/ч • "
             "Speechmatics ~$1.04/ч.",
             anchor="w",
-        ).grid(row=4, column=0, columnspan=3, padx=4, pady=(0, 4), sticky="w")
+        ).grid(row=4, column=0, columnspan=4, padx=4, pady=(0, 4), sticky="w")
 
     def _build_dictionaries_section(self, parent) -> None:
         section = self._section_card(parent, "Словари", row=4)
@@ -358,39 +478,45 @@ class SettingsDialog(ctk.CTkToplevel):
     def _build_openrouter_section(self, parent) -> None:
         """OpenRouter API key + default model.
 
-        Layout: title, [api_key field][Вставить], [Проверить ключ][status],
-        default model dropdown.
+        Key handling delegated to ui.widgets.api_key_row (entry + eye-toggle
+        + Проверить + status). Default-model dropdown stays as a separate
+        row below.
         """
-        section = self._section_card(parent, "OpenRouter", row=5)
+        section = self._section_card(parent, "OpenRouter", row=0)
 
-        # API key row — entry + paste button
-        label(section, "API ключ").grid(
-            row=0, column=0, padx=(4, 8), pady=6, sticky="w",
+        def _persist(key: str, _info: dict) -> None:
+            self._parent._config["openrouter_api_key"] = key
+            save_config(self._parent._config)
+
+        def _on_validate(key: str) -> dict:
+            # Lazy import — keeps tasks/openrouter_client (and transitively
+            # requests) off the dialog-construction path.
+            from tasks.openrouter_client import OpenRouterClient
+            client = OpenRouterClient(key)
+            try:
+                return client.validate_key()
+            finally:
+                client.close()
+
+        def _format_success(info: dict) -> str:
+            balance = info.get("balance_remaining")
+            if balance is not None:
+                return f"✓ Активен (баланс: ${balance:.2f})"
+            return f"✓ Активен ({info.get('label') or 'unlimited'})"
+
+        refs = api_key_row(
+            section,
+            label_text="API ключ",
+            key_var=self._parent._openrouter_key_var,
+            placeholder="sk-or-...",
+            on_validate=_on_validate,
+            on_key_persisted=_persist,
+            format_success=_format_success,
+            row=0,
         )
-        ctk.CTkEntry(
-            section, textvariable=self._parent._openrouter_key_var, height=36,
-            corner_radius=10, border_color=BORDER, border_width=1,
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(family=FONT, size=12),
-            placeholder_text="sk-or-...",
-            show="•",  # Mask the key visually — same UX as cloud API key field.
-        ).grid(row=0, column=1, padx=4, pady=6, sticky="ew")
-        tonal_button(
-            section, text="Вставить",
-            command=self._paste_openrouter_key, width=100,
-        ).grid(row=0, column=2, padx=(4, 4), pady=6)
+        self._openrouter_status = refs["status"]
 
-        # Validate row — button + status label
-        tonal_button(
-            section, text="Проверить ключ",
-            command=self._validate_openrouter, width=140,
-        ).grid(row=1, column=0, padx=4, pady=6, sticky="w")
-        self._openrouter_status = label(section, "", anchor="w")
-        self._openrouter_status.grid(
-            row=1, column=1, columnspan=2, padx=(8, 4), pady=6, sticky="ew",
-        )
-
-        # Default model dropdown
+        # Default model dropdown (unchanged — separate row below the key)
         label(section, "Модель по умолчанию").grid(
             row=2, column=0, padx=(4, 8), pady=6, sticky="w",
         )
@@ -399,226 +525,68 @@ class SettingsDialog(ctk.CTkToplevel):
             list(_CURATED_MODELS.keys()),
         ).grid(row=2, column=1, columnspan=2, padx=4, pady=6, sticky="ew")
 
-    def _paste_openrouter_key(self) -> None:
-        """Paste-from-clipboard helper. Mirrors HF Token paste pattern but
-        the handler lives on the dialog rather than App since the var is
-        OpenRouter-specific (not yet used outside the Settings flow)."""
-        try:
-            text = self.clipboard_get().strip()
-            self._parent._openrouter_key_var.set(text)
-            if text:
-                self._parent._config["openrouter_api_key"] = text
-                save_config(self._parent._config)
-        except tk.TclError:
-            return  # empty clipboard / non-text — silent
-        except OSError as e:
-            _logger.warning("Failed to persist OpenRouter key: %s", e)
-
     # ── Linear section (Phase 6.0 Task 15) ────────────────────────────
 
     def _build_linear_section(self, parent) -> None:
         """Linear API key + connection status.
 
-        No team picker here — that's per-run in the ExtractTasksDialog
-        (Phase 6.1). Settings only persists the key. Phase 6.4 adds the
-        enabled-checkbox above; when off, Linear is hidden from the
-        backend dropdown in ExtractTasksDialog (effect wired in 6.4.1).
+        enable-checkbox + API key handling delegated to api_key_row.
+        No team picker here — that's per-run in ExtractTasksDialog.
         """
-        section = self._section_card(parent, "Linear", row=6)
+        section = self._section_card(parent, "Linear", row=1)
 
-        ctk.CTkCheckBox(
-            section, text="Использовать Linear",
-            variable=self._parent._linear_enabled_var,
-            command=self._parent._on_linear_enabled_changed,
-            font=ctk.CTkFont(family=FONT, size=13),
-            text_color=TEXT_PRIMARY, fg_color=BLUE, hover_color=BLUE_DIM,
-            border_color=BORDER, corner_radius=4,
-            checkbox_height=20, checkbox_width=20,
-        ).grid(row=0, column=0, columnspan=3, padx=4, pady=(2, 8), sticky="w")
-
-        label(section, "API ключ").grid(
-            row=1, column=0, padx=(4, 8), pady=6, sticky="w",
-        )
-        ctk.CTkEntry(
-            section, textvariable=self._parent._linear_key_var, height=36,
-            corner_radius=10, border_color=BORDER, border_width=1,
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(family=FONT, size=12),
-            placeholder_text="lin_api_...",
-            show="•",
-        ).grid(row=1, column=1, padx=4, pady=6, sticky="ew")
-        tonal_button(
-            section, text="Вставить",
-            command=self._paste_linear_key, width=100,
-        ).grid(row=1, column=2, padx=(4, 4), pady=6)
-
-        tonal_button(
-            section, text="Проверить ключ",
-            command=self._validate_linear, width=140,
-        ).grid(row=2, column=0, padx=4, pady=6, sticky="w")
-        self._linear_status = label(section, "", anchor="w")
-        self._linear_status.grid(
-            row=2, column=1, columnspan=2, padx=(8, 4), pady=6, sticky="ew",
-        )
-
-    def _paste_linear_key(self) -> None:
-        """Paste-from-clipboard. Mirrors _paste_openrouter_key."""
-        try:
-            text = self.clipboard_get().strip()
-            self._parent._linear_key_var.set(text)
-            if text:
-                self._parent._config["linear_api_key"] = text
-                save_config(self._parent._config)
-        except tk.TclError:
-            return  # empty clipboard / non-text — silent
-        except OSError as e:
-            _logger.warning("Failed to persist Linear key: %s", e)
-
-    def _validate_linear(self) -> None:
-        """Make a single viewer GraphQL query. Show display name on success.
-
-        Same threading pattern as _validate_openrouter. Saves the key to
-        config.json only on successful validation.
-        """
-        key = self._parent._linear_key_var.get().strip()
-        if not key:
-            self._linear_status.configure(
-                text="Введите API ключ", text_color=RED,
-            )
-            return
-
-        self._linear_status.configure(
-            text="Проверка...", text_color=TEXT_SECONDARY,
-        )
-
-        def worker():
-            try:
-                # Lazy import — same rationale as _validate_openrouter.
-                from tasks.linear_client import LinearClient, LinearError
-                client = LinearClient(key)
-                try:
-                    viewer = client.validate_key()
-                finally:
-                    client.close()
-            except LinearError as e:
-                self.after(0, self._linear_status.configure, {
-                    "text": f"✗ {e}", "text_color": RED,
-                })
-                return
-            except Exception as e:
-                self.after(0, self._linear_status.configure, {
-                    "text": f"✗ {e}", "text_color": RED,
-                })
-                return
-
-            # Key works — persist it.
+        def _persist(key: str, _info: dict) -> None:
             self._parent._config["linear_api_key"] = key
             save_config(self._parent._config)
 
-            name = viewer.get("name") or viewer.get("email") or "(unknown)"
-            self.after(0, self._linear_status.configure, {
-                "text": f"✓ Подключено: {name}", "text_color": GREEN,
-            })
+        def _on_validate(key: str) -> dict:
+            from tasks.linear_client import LinearClient
+            client = LinearClient(key)
+            try:
+                return client.validate_key()
+            finally:
+                client.close()
 
-        threading.Thread(target=worker, daemon=True).start()
+        def _format_success(info: dict) -> str:
+            name = info.get("name") or info.get("email") or "(unknown)"
+            return f"✓ Подключено: {name}"
+
+        refs = api_key_row(
+            section,
+            label_text="API ключ",
+            key_var=self._parent._linear_key_var,
+            placeholder="lin_api_...",
+            on_validate=_on_validate,
+            on_key_persisted=_persist,
+            enabled_var=self._parent._linear_enabled_var,
+            enabled_label="Использовать Linear",
+            on_enabled_changed=self._parent._on_linear_enabled_changed,
+            format_success=_format_success,
+            row=0,
+        )
+        self._linear_status = refs["status"]
 
     def _build_glide_section(self, parent) -> None:
         """Glide API key + connection status (Phase 6.4).
 
-        Glide is the parallel backend to Linear. Same pattern as the
-        Linear section above: enabled-checkbox at top, paste, validate
-        (saves on success), shows ✓/✗ status next to the button.
+        Mirrors the Linear section pattern (enable-checkbox + validate
+        through api_key_row).
         """
-        section = self._section_card(parent, "Glide", row=7)
+        section = self._section_card(parent, "Glide", row=2)
 
-        ctk.CTkCheckBox(
-            section, text="Использовать Glide",
-            variable=self._parent._glide_enabled_var,
-            command=self._parent._on_glide_enabled_changed,
-            font=ctk.CTkFont(family=FONT, size=13),
-            text_color=TEXT_PRIMARY, fg_color=BLUE, hover_color=BLUE_DIM,
-            border_color=BORDER, corner_radius=4,
-            checkbox_height=20, checkbox_width=20,
-        ).grid(row=0, column=0, columnspan=3, padx=4, pady=(2, 8), sticky="w")
-
-        label(section, "API ключ").grid(
-            row=1, column=0, padx=(4, 8), pady=6, sticky="w",
-        )
-        ctk.CTkEntry(
-            section, textvariable=self._parent._glide_key_var, height=36,
-            corner_radius=10, border_color=BORDER, border_width=1,
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(family=FONT, size=12),
-            placeholder_text="glide_pk_<workspace>_...",
-            show="•",
-        ).grid(row=1, column=1, padx=4, pady=6, sticky="ew")
-        tonal_button(
-            section, text="Вставить",
-            command=self._paste_glide_key, width=100,
-        ).grid(row=1, column=2, padx=(4, 4), pady=6)
-
-        tonal_button(
-            section, text="Проверить ключ",
-            command=self._validate_glide, width=140,
-        ).grid(row=2, column=0, padx=4, pady=6, sticky="w")
-        self._glide_status = label(section, "", anchor="w")
-        self._glide_status.grid(
-            row=2, column=1, columnspan=2, padx=(8, 4), pady=6, sticky="ew",
-        )
-
-    def _paste_glide_key(self) -> None:
-        """Paste-from-clipboard. Mirrors _paste_linear_key."""
-        try:
-            text = self.clipboard_get().strip()
-            self._parent._glide_key_var.set(text)
-            if text:
-                self._parent._config["glide_api_key"] = text
-                save_config(self._parent._config)
-        except Exception:
-            pass
-
-    def _validate_glide(self) -> None:
-        """GET /boards via GlideClient.validate_key — proves the key works
-        and reports how many boards are visible to the integration token.
-
-        Saves the key to config.json only on success (mirrors Linear /
-        OpenRouter discipline — typing intermediate garbage doesn't persist).
-        """
-        key = self._parent._glide_key_var.get().strip()
-        if not key:
-            self._glide_status.configure(
-                text="Введите API ключ", text_color=RED,
-            )
-            return
-
-        self._glide_status.configure(
-            text="Проверка...", text_color=TEXT_SECONDARY,
-        )
-
-        def worker():
-            try:
-                # Lazy import — same rationale as _validate_linear.
-                from tasks.glide_client import GlideClient, GlideError
-                client = GlideClient(key)
-                try:
-                    info = client.validate_key()
-                finally:
-                    client.close()
-            except GlideError as e:
-                self.after(0, self._glide_status.configure, {
-                    "text": f"✗ {e}", "text_color": RED,
-                })
-                return
-            except Exception as e:
-                self.after(0, self._glide_status.configure, {
-                    "text": f"✗ {e}", "text_color": RED,
-                })
-                return
-
-            # Key works — persist it.
+        def _persist(key: str, _info: dict) -> None:
             self._parent._config["glide_api_key"] = key
             save_config(self._parent._config)
 
+        def _on_validate(key: str) -> dict:
+            from tasks.glide_client import GlideClient
+            client = GlideClient(key)
+            try:
+                return client.validate_key()
+            finally:
+                client.close()
+
+        def _format_success(info: dict) -> str:
             count = info["board_count"]
             sample = info["sample_names"]
             # "5 досок" / "1 доска" / "0 досок" — Russian noun-count is
@@ -626,70 +594,22 @@ class SettingsDialog(ctk.CTkToplevel):
             base = f"✓ Подключено: {count} досок"
             if sample:
                 base += f" ({', '.join(sample)})"
-            self.after(0, self._glide_status.configure, {
-                "text": base, "text_color": GREEN,
-            })
+            return base
 
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _validate_openrouter(self) -> None:
-        """Make a single GET /auth/key. Show balance on success, error on fail.
-
-        Runs in a worker thread to keep the dialog responsive on slow networks
-        (the call is bounded by a 10s timeout inside the client). UI updates
-        from the worker are marshalled back via ``self.after(0, ...)``.
-        Saves the key to config.json only on success — typing intermediate
-        garbage doesn't leak into persistent state.
-        """
-        key = self._parent._openrouter_key_var.get().strip()
-        if not key:
-            self._openrouter_status.configure(
-                text="Введите API ключ", text_color=RED,
-            )
-            return
-
-        self._openrouter_status.configure(
-            text="Проверка...", text_color=TEXT_SECONDARY,
+        refs = api_key_row(
+            section,
+            label_text="API ключ",
+            key_var=self._parent._glide_key_var,
+            placeholder="glide_pk_<workspace>_...",
+            on_validate=_on_validate,
+            on_key_persisted=_persist,
+            enabled_var=self._parent._glide_enabled_var,
+            enabled_label="Использовать Glide",
+            on_enabled_changed=self._parent._on_glide_enabled_changed,
+            format_success=_format_success,
+            row=0,
         )
-
-        def worker():
-            try:
-                # Imported lazily to avoid pulling tasks/openrouter_client (and
-                # thus `requests`) at Settings-dialog construction time.
-                from tasks.openrouter_client import (
-                    OpenRouterClient,
-                    OpenRouterError,
-                )
-                client = OpenRouterClient(key)
-                try:
-                    info = client.validate_key()
-                finally:
-                    client.close()
-            except OpenRouterError as e:
-                self.after(0, self._openrouter_status.configure, {
-                    "text": f"✗ {e}", "text_color": RED,
-                })
-                return
-            except Exception as e:  # belt-and-braces: anything else surfaces too
-                self.after(0, self._openrouter_status.configure, {
-                    "text": f"✗ {e}", "text_color": RED,
-                })
-                return
-
-            # Key works — persist it.
-            self._parent._config["openrouter_api_key"] = key
-            save_config(self._parent._config)
-
-            balance = info.get("balance_remaining")
-            if balance is not None:
-                msg = f"✓ Активен (баланс: ${balance:.2f})"
-            else:
-                msg = f"✓ Активен ({info.get('label') or 'unlimited'})"
-            self.after(0, self._openrouter_status.configure, {
-                "text": msg, "text_color": GREEN,
-            })
-
-        threading.Thread(target=worker, daemon=True).start()
+        self._glide_status = refs["status"]
 
     # ── Google Drive section (Phase 7.0) ──────────────────────────────
 
@@ -705,7 +625,7 @@ class SettingsDialog(ctk.CTkToplevel):
         via `self.after(0, ...)` so widget updates happen on the main
         thread. Mirrors the _validate_openrouter pattern.
         """
-        section = self._section_card(parent, "Google Drive", row=8)
+        section = self._section_card(parent, "Google Drive", row=0)
 
         # Status row — badge bound to the App's _gdrive_status_var.
         label(section, "Статус").grid(
