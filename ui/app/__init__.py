@@ -56,6 +56,43 @@ __all__ = [
 ]
 
 
+def _get_windows_work_area(tk_widget) -> tuple[int, int, int, int]:
+    """Return (x, y, width, height) of the Windows work area — the screen
+    minus the taskbar. Used by App.__init__ to size the borderless kiosk
+    window so the taskbar doesn't overlap the bottom buttons.
+
+    Raises OSError on non-Windows or if the Win32 call fails — caller
+    should fall back to a regular maximized window in that case.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class RECT(ctypes.Structure):
+        _fields_ = [
+            ("left", wintypes.LONG),
+            ("top", wintypes.LONG),
+            ("right", wintypes.LONG),
+            ("bottom", wintypes.LONG),
+        ]
+
+    # SPI_GETWORKAREA = 0x0030. SystemParametersInfoW reads the work-area
+    # rectangle into the RECT we pass via byref. Returns nonzero on success.
+    rect = RECT()
+    ok = ctypes.windll.user32.SystemParametersInfoW(
+        0x0030, 0, ctypes.byref(rect), 0,
+    )
+    if not ok:
+        raise OSError("SystemParametersInfo(SPI_GETWORKAREA) failed")
+
+    # winfo_screen* is the fall-back source of screen dimensions if
+    # SystemParametersInfo returns a degenerate rect; defensive.
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width < 200 or height < 200:
+        raise OSError(f"work area too small: {width}×{height}")
+    return rect.left, rect.top, width, height
+
+
 class App(
     DialogsMixin,
     RecorderMixin,
@@ -91,36 +128,35 @@ class App(
 
         # Kiosk-style fullscreen on launch (user request 2026-05-28).
         #
-        # Why brute-force geometry+overrideredirect instead of attributes(
-        # '-fullscreen', True): both state('zoomed') and attributes(
-        # '-fullscreen') were verified live on the maintainer's Windows 10
-        # dev machine to silently NOT take effect — likely a CustomTkinter
-        # init-order race that overrides our calls. Direct geometry assign
-        # + overrideredirect deterministically wins because we tell Tk
-        # exactly what pixels to fill.
+        # Brute-force geometry+overrideredirect approach: tell Tk exactly
+        # which pixels to fill instead of asking the WM via attributes(
+        # '-fullscreen') — the latter silently fails on this CTk + Win10
+        # stack (verified across 3 rebuilds on 2026-05-28).
         #
-        # Approach:
-        #   1. Read screen dimensions via winfo_screen*()
-        #   2. Set geometry to {screen_w}x{screen_h}+0+0 (cover everything)
-        #   3. overrideredirect(True) — strip OS window chrome (no title bar,
-        #      no taskbar entry, no Alt-Tab thumbnail). Combined with the
-        #      Extract dialog's same treatment (commit 762e96a), the entire
-        #      app feels like one unified inline workspace.
-        #   4. Esc binding restores normal window (overrideredirect off +
-        #      smaller geometry) so user isn't trapped.
+        # winfo_screenwidth/height return the FULL screen including the
+        # Windows taskbar area, so a naive geometry={screen}x{screen}+0+0
+        # gets the bottom ~40-60px overlapped by the taskbar (Windows
+        # taskbar stays on top of regular borderless windows). Instead use
+        # Win32 SystemParametersInfo(SPI_GETWORKAREA, ...) which returns
+        # the screen minus the taskbar — the area where regular apps live.
+        # The app's bottom buttons (Извлечь задачи, История, Audio Cutter)
+        # are now fully visible above the taskbar.
         #
-        # Trade-offs (intentional for kiosk UX):
-        #   - No title bar = no X button
-        #   - No taskbar entry on Windows (Alt+Tab keyboard still works)
-        #   - The 1280x800 geometry above is the un-fullscreen fallback
+        # Trade-offs (intentional for the inline-kiosk UX):
+        #   - No title bar = no X button (close via Alt+F4 / Esc / F11)
+        #   - Windows taskbar STAYS VISIBLE at bottom — user can see clock,
+        #     switch to Chrome via taskbar icons, etc. The app feels like
+        #     a maximized borderless window, not a full kiosk.
+        #   - Esc restores a regular windowed mode (1280×800)
         try:
-            screen_w = self.winfo_screenwidth()
-            screen_h = self.winfo_screenheight()
-            self.geometry(f"{screen_w}x{screen_h}+0+0")
+            work_x, work_y, work_w, work_h = _get_windows_work_area(self)
+            self.geometry(f"{work_w}x{work_h}+{work_x}+{work_y}")
             self.overrideredirect(True)
-        except tk.TclError:
-            # Some exotic WMs reject overrideredirect — fall back to a
-            # regular maximized window via state('zoomed').
+        except (tk.TclError, OSError, AttributeError):
+            # Non-Windows OR Win32 API unavailable OR exotic WM rejects
+            # overrideredirect — fall back to ordinary maximized window
+            # (state('zoomed')) which still gives ≈full-screen feel with
+            # WM chrome intact.
             try:
                 self.state("zoomed")
             except tk.TclError:
