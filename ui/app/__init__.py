@@ -126,71 +126,40 @@ class App(
                 # blocking app startup over a cosmetic icon.
                 pass
 
-        # Kiosk-style fullscreen on launch (user request 2026-05-28).
+        # Maximize on launch (Windows 'zoomed' state) — fills the work area
+        # but KEEPS the title bar and X button visible. Earlier iterations
+        # tried overrideredirect+brute-force-geometry for a kiosk feel, but
+        # it trapped the maintainer's own session 2026-05-28: borderless
+        # windows aren't enumerated in Task Manager's Apps view, leaving
+        # zero exit options if the Esc binding didn't fire. Lesson:
+        # NEVER hide the title bar without a 100%-verified escape hatch.
         #
-        # Brute-force geometry+overrideredirect approach: tell Tk exactly
-        # which pixels to fill instead of asking the WM via attributes(
-        # '-fullscreen') — the latter silently fails on this CTk + Win10
-        # stack (verified across 3 rebuilds on 2026-05-28).
-        #
-        # winfo_screenwidth/height return the FULL screen including the
-        # Windows taskbar area, so a naive geometry={screen}x{screen}+0+0
-        # gets the bottom ~40-60px overlapped by the taskbar (Windows
-        # taskbar stays on top of regular borderless windows). Instead use
-        # Win32 SystemParametersInfo(SPI_GETWORKAREA, ...) which returns
-        # the screen minus the taskbar — the area where regular apps live.
-        # The app's bottom buttons (Извлечь задачи, История, Audio Cutter)
-        # are now fully visible above the taskbar.
-        #
-        # Trade-offs (intentional for the inline-kiosk UX):
-        #   - No title bar = no X button (close via Alt+F4 / Esc / F11)
-        #   - Windows taskbar STAYS VISIBLE at bottom — user can see clock,
-        #     switch to Chrome via taskbar icons, etc. The app feels like
-        #     a maximized borderless window, not a full kiosk.
-        #   - Esc restores a regular windowed mode (1280×800)
+        # If state('zoomed') silently fails (intermittent CTk init race
+        # seen earlier in the same session), fall back to explicit Win32
+        # work-area geometry — but WITHOUT overrideredirect, so the user
+        # always retains the OS window controls (X / minimize / drag).
         try:
-            work_x, work_y, work_w, work_h = _get_windows_work_area(self)
-            self.geometry(f"{work_w}x{work_h}+{work_x}+{work_y}")
-            self.overrideredirect(True)
-        except (tk.TclError, OSError, AttributeError):
-            # Non-Windows OR Win32 API unavailable OR exotic WM rejects
-            # overrideredirect — fall back to ordinary maximized window
-            # (state('zoomed')) which still gives ≈full-screen feel with
-            # WM chrome intact.
+            self.state("zoomed")
+        except tk.TclError:
             try:
-                self.state("zoomed")
+                work_x, work_y, work_w, work_h = _get_windows_work_area(self)
+                self.geometry(f"{work_w}x{work_h}+{work_x}+{work_y}")
+            except (tk.TclError, OSError, AttributeError):
+                pass
+
+        # F11 toggles maximize — standard chord users expect. No Escape
+        # binding because we kept the title bar (X button is the obvious
+        # exit; binding Escape there would hijack the key from form fields).
+        def _toggle_maximize(_event=None) -> None:
+            try:
+                if self.state() == "zoomed":
+                    self.state("normal")
+                else:
+                    self.state("zoomed")
             except tk.TclError:
                 pass
 
-        def _exit_fullscreen(_event=None) -> None:
-            """Restore normal window: re-enable WM chrome + medium geometry."""
-            try:
-                self.overrideredirect(False)
-                self.geometry("1280x800")
-            except tk.TclError:
-                pass
-
-        def _toggle_fullscreen(_event=None) -> None:
-            try:
-                currently_borderless = bool(self.overrideredirect())
-            except tk.TclError:
-                currently_borderless = False
-            if currently_borderless:
-                _exit_fullscreen()
-            else:
-                try:
-                    self.geometry(
-                        f"{self.winfo_screenwidth()}x"
-                        f"{self.winfo_screenheight()}+0+0"
-                    )
-                    self.overrideredirect(True)
-                except tk.TclError:
-                    pass
-
-        # Esc → exit fullscreen, F11 → toggle. Standard kiosk UX so the
-        # user can grab API keys from browser etc. without being trapped.
-        self.bind("<Escape>", _exit_fullscreen)
-        self.bind("<F11>", _toggle_fullscreen)
+        self.bind("<F11>", _toggle_maximize)
         # Apply the saved appearance mode BEFORE constructing widgets so
         # tuple colors in theme.py resolve to the right palette on first
         # paint. Default "system" follows the OS setting. Persisted via
