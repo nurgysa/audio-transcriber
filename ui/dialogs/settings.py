@@ -69,7 +69,10 @@ class SettingsDialog(ctk.CTkToplevel):
         self._parent = parent  # App instance — we read its StringVars
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        # row 0=header, 1=banner (hidden until needed), 2=tabview (expands),
+        # 3=footer. Only the tabview row gets weight so the banner stays at
+        # natural height and the footer pins to the bottom.
+        self.grid_rowconfigure(2, weight=1)
 
         # --- Header ---
         header = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=0, height=48)
@@ -79,6 +82,26 @@ class SettingsDialog(ctk.CTkToplevel):
             font=ctk.CTkFont(family=FONT, size=16, weight="bold"),
             text_color=TEXT_PRIMARY,
         ).grid(row=0, column=0, padx=20, pady=12)
+
+        # --- First-run status banner (between header and tabs) ---
+        # Clickable: jumps to the relevant tab + focuses the relevant widget.
+        # State machine in _update_banner; click dispatch in _handle_banner_click.
+        # Default hidden — _update_banner shows it when a condition fires.
+        self._banner_action: str | None = None
+        self._banner = ctk.CTkButton(
+            self,
+            text="",
+            command=self._handle_banner_click,
+            fg_color="transparent",
+            hover_color=SURFACE,
+            text_color=RED,
+            anchor="w",
+            font=ctk.CTkFont(family=FONT, size=12),
+            corner_radius=0,
+            height=32,
+        )
+        self._banner.grid(row=1, column=0, padx=12, pady=(0, 4), sticky="ew")
+        self._banner.grid_remove()
 
         # --- Tab view ---
         # CTkTabview inherits Light/Dark from the theme palette automatically
@@ -92,7 +115,7 @@ class SettingsDialog(ctk.CTkToplevel):
             segmented_button_unselected_color=SURFACE,
             text_color=TEXT_PRIMARY,
         )
-        self._tabview.grid(row=1, column=0, padx=12, pady=(8, 4), sticky="nsew")
+        self._tabview.grid(row=2, column=0, padx=12, pady=(4, 4), sticky="nsew")
 
         tab_transcription = self._tabview.add("Транскрипция")
         tab_integrations = self._tabview.add("Интеграции")
@@ -119,16 +142,26 @@ class SettingsDialog(ctk.CTkToplevel):
         # Tab 3 «Резервная копия» — independent housekeeping
         self._build_gdrive_section(tab_backup)
 
-        # Reactive trace wiring for the first-run banner is added in
-        # Task 7 of the redesign plan — see
-        # docs/superpowers/plans/2026-05-28-settings-ux-redesign-plan.md.
-        # In this intermediate state (post-Task-5, pre-Task-7) the dialog
-        # has no reactive cloud-provider/lang warning — Task 7 reintroduces
-        # it as a global banner above the tab bar.
+        # Reactive banner: subscribe to the three vars whose values
+        # determine the banner state. Tokens kept on self so destroy()
+        # can unregister them (PR #25 pattern, extended).
+        self._trace_lang = self._parent._lang_var.trace_add(
+            "write", self._update_banner,
+        )
+        self._trace_provider = self._parent._cloud_provider_var.trace_add(
+            "write", self._update_banner,
+        )
+        self._trace_api_key = self._parent._cloud_api_key_var.trace_add(
+            "write", self._update_banner,
+        )
+        # Run once at end of __init__ so an already-loaded config (empty
+        # STT key, mixed lang + Deepgram, etc.) surfaces the banner
+        # immediately — not only after the first interaction.
+        self._update_banner()
 
         # --- Footer ---
         footer = ctk.CTkFrame(self, fg_color="transparent")
-        footer.grid(row=2, column=0, padx=16, pady=(4, 14), sticky="ew")
+        footer.grid(row=3, column=0, padx=16, pady=(4, 14), sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
         primary_button(
             footer, text="Закрыть", command=self.destroy, width=120,
@@ -162,6 +195,74 @@ class SettingsDialog(ctk.CTkToplevel):
                     # Var already destroyed during parent teardown — safe to ignore.
                     pass
         super().destroy()
+
+    # ── First-run banner state machine + click handlers ────────────────
+
+    def _update_banner(self, *_args) -> None:
+        """Show banner with the highest-priority actionable issue.
+
+        Priority (top match wins):
+          1. Cloud STT key empty → red "Введите ключ" + action=stt
+          2. Mixed language + provider doesn't support it → red warning + action=lang
+          3. No issue → hide banner (silence-is-OK)
+
+        Subscribed to `_cloud_api_key_var`, `_lang_var`, `_cloud_provider_var`
+        via `trace_add("write", ...)`. Also called once at the end of
+        `__init__` so a pre-loaded config that already has the issue
+        surfaces the banner immediately.
+        """
+        cloud_key = (self._parent._cloud_api_key_var.get() or "").strip()
+        if not cloud_key:
+            self._banner.configure(
+                text="⚠ Введите ключ провайдера STT (вкладка «Транскрипция») →",
+                text_color=RED,
+            )
+            self._banner_action = "stt"
+            self._banner.grid()
+            return
+
+        lang_label = self._parent._lang_var.get()
+        lang_code = LANGUAGES.get(lang_label)
+        if lang_code == "mixed":
+            provider_name = self._parent._cloud_provider_var.get()
+            provider_cls = PROVIDERS.get(provider_name)
+            if provider_cls is not None and not provider_cls.supports_mixed:
+                self._banner.configure(
+                    text=(
+                        f"⚠ {provider_name} не поддерживает «Смешанный "
+                        f"(KZ+RU+EN)». Выберите другой провайдер или язык →"
+                    ),
+                    text_color=RED,
+                )
+                self._banner_action = "lang"
+                self._banner.grid()
+                return
+
+        # No actionable issue → hide.
+        self._banner.grid_remove()
+        self._banner_action = None
+
+    def _handle_banner_click(self) -> None:
+        """Banner is clickable — dispatch by current action."""
+        if self._banner_action == "stt":
+            self._jump_to_stt()
+        elif self._banner_action == "lang":
+            self._jump_to_lang()
+
+    def _jump_to_stt(self) -> None:
+        """Switch to Транскрипция tab + focus the STT API key entry."""
+        self._tabview.set("Транскрипция")
+        # _cloud_api_key_entry is captured in _build_cloud_section.
+        entry = getattr(self, "_cloud_api_key_entry", None)
+        if entry is not None:
+            entry.focus_set()
+
+    def _jump_to_lang(self) -> None:
+        """Switch to Транскрипция tab + focus the Язык dropdown."""
+        self._tabview.set("Транскрипция")
+        menu = getattr(self, "_lang_menu", None)
+        if menu is not None:
+            menu.focus_set()
 
     def _section_card(self, parent, title: str, row: int) -> ctk.CTkFrame:
         """A titled card. Returns the inner content frame (already gridded)."""
@@ -202,10 +303,12 @@ class SettingsDialog(ctk.CTkToplevel):
         section = self._section_card(parent, "Транскрипция", row=1)
 
         label(section, "Язык").grid(row=0, column=0, padx=(4, 8), pady=6, sticky="w")
-        option_menu(
+        # Capture ref so the banner's _jump_to_lang can focus_set() it.
+        self._lang_menu = option_menu(
             section, self._parent._lang_var, list(LANGUAGES.keys()),
             command=self._parent._on_language_changed,
-        ).grid(row=0, column=1, padx=4, pady=6, sticky="w")
+        )
+        self._lang_menu.grid(row=0, column=1, padx=4, pady=6, sticky="w")
 
     def _build_audio_section(self, parent) -> None:
         section = self._section_card(parent, "Аудио", row=2)
