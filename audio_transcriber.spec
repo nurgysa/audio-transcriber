@@ -24,6 +24,7 @@ from pathlib import Path
 block_cipher = None
 PROJECT_ROOT = Path(SPECPATH)
 VENDOR_FFMPEG = PROJECT_ROOT / "vendor" / "ffmpeg"
+APP_ICON = PROJECT_ROOT / "vendor" / "icons" / "audio_transcriber.ico"
 
 
 a = Analysis(
@@ -45,6 +46,11 @@ a = Analysis(
         # utils.load_config() finds a populated file on first launch
         # (avoids the "config not found" cold-start branch in utils.py).
         ("config.example.json", "."),
+        # App icon — bundled so utils.get_app_icon_path() resolves it via
+        # sys._MEIPASS in frozen mode, and self.iconbitmap() in App.__init__
+        # picks it up for the title bar. The .exe Explorer/Taskbar icon is
+        # set separately via EXE(icon=...) below.
+        (str(APP_ICON), "vendor/icons"),
     ],
     hiddenimports=[
         # Network / HTTP layer
@@ -101,6 +107,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,  # No console window — GUI app
+    icon=str(APP_ICON),  # Windows Explorer + Taskbar + Alt-Tab icon
 )
 
 coll = COLLECT(

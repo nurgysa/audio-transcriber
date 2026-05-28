@@ -99,18 +99,24 @@ class DialogsMixin:
         HistoryDialog(self, on_load_to_main=self._load_history_into_main)
 
     def _open_extract_tasks_dialog(self):
-        """Validate API keys are set, then open the Extract dialog."""
-        # Gate-check: both keys must be present in config. Mirrors the
-        # cloud-mode key check at line 790-797.
+        """Validate the OpenRouter key is set, then open the Extract dialog.
+
+        Linear / Glide keys are OPT-IN: required only if the user actually
+        picks that backend in the dialog. The dialog itself handles missing
+        backend keys gracefully (see extract_tasks/__init__.py:432 —
+        '(нет ключа Linear/Glide)' placeholder + empty members/labels lists
+        passed to the LLM prompt). protocol.md generation also runs through
+        OpenRouter alone — no Linear/Glide dependency at all.
+        """
         openrouter_key = (self._config.get("openrouter_api_key") or "").strip()
-        linear_key     = (self._config.get("linear_api_key") or "").strip()
-        if not openrouter_key or not linear_key:
+        if not openrouter_key:
             messagebox.showwarning(
-                "Нет API-ключей",
-                "Извлечение задач требует двух ключей:\n"
-                "  • OpenRouter — чтобы вызвать LLM\n"
-                "  • Linear — чтобы получить список команд и участников\n\n"
-                "Откройте Настройки и введите ключи.",
+                "Нет OpenRouter ключа",
+                "Извлечение задач и генерация протокола требуют "
+                "OpenRouter API ключ (LLM-вызов).\n\n"
+                "Откройте Настройки → OpenRouter и введите ключ.\n\n"
+                "Linear / Glide ключи опциональны — они нужны только если "
+                "хотите отправлять задачи в эти таск-трекеры.",
             )
             return
 

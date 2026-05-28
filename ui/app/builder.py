@@ -171,7 +171,7 @@ def build_ui(app):
     # path runs a pre-denoise pass via ffmpeg before sending audio to
     # the provider.
     app._denoise_var = ctk.BooleanVar(
-        value=bool(app._config.get("denoise_audio", False)),
+        value=bool(app._config.get("denoise_audio", True)),
     )
 
     # Cloud provider state. Whisper-model / GPU-device pickers and the
@@ -201,7 +201,7 @@ def build_ui(app):
     )
     app._openrouter_default_model_var = ctk.StringVar(
         value=app._config.get(
-            "tasks_default_model", "anthropic/claude-sonnet-4.5",
+            "tasks_default_model", "google/gemini-3.5-flash",
         ),
     )
     app._openrouter_default_model_var.trace_add(
@@ -260,10 +260,10 @@ def build_ui(app):
     # Appearance mode (light/dark/system). The actual ctk.set_appearance_mode
     # call already happened above with the saved value; this StringVar
     # just drives the Settings dialog dropdown and the change callback.
-    saved_appearance_label = app._config.get("appearance_mode", "Системная")
+    saved_appearance_label = app._config.get("appearance_mode", "Тёмная")
     app._appearance_var = ctk.StringVar(
         value=saved_appearance_label
-        if saved_appearance_label in APPEARANCE_MODES else "Системная",
+        if saved_appearance_label in APPEARANCE_MODES else "Тёмная",
     )
 
     # --- Run controls card ---

@@ -108,14 +108,19 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._try_load_existing_tasks()
 
         self.title("Извлечение задач")
-        # 1100x720 — comfortable for the master-detail editor (Phase 6.2):
-        # left list ≥260px, right form ≥520px, both with breathing room.
-        # Spec called for ~960×680 but real-world usage with longer Russian
-        # task titles benefits from wider rows. minsize prevents the layout
-        # from collapsing if user resizes too aggressively (form fields
-        # become unreadable below ~720 wide).
-        self.geometry("1100x720")
-        self.minsize(820, 560)
+        # Position+size to roughly match the parent window so the dialog
+        # feels related to it without going full-borderless (which traps
+        # the user — verified 2026-05-28 when the maintainer's own session
+        # had to be terminated via Stop-Process because overrideredirect
+        # had stripped both the X button AND the Task Manager Apps-view
+        # entry). Keep the normal title bar — that's the user's exit.
+        parent.update_idletasks()
+        w = max(960, parent.winfo_width() - 80)
+        h = max(680, parent.winfo_height() - 80)
+        x = parent.winfo_rootx() + 40
+        y = parent.winfo_rooty() + 40
+        self.geometry(f"{w}x{h}+{x}+{y}")
+        self.minsize(960, 680)
         self.configure(fg_color=BG)
         self.transient(parent)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1092,7 +1097,10 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 on_select=self._select_task,
                 on_toggle=self._on_row_toggle,
             )
-            row.grid(sticky="ew", padx=2, pady=1)
+            # Generous spacing — padx=8 lets cards breathe against the
+            # scrollable-frame edge, pady=4 puts visible separation between
+            # adjacent task cards instead of the cramped 1px default.
+            row.grid(sticky="ew", padx=8, pady=4)
             # Re-apply non-PENDING status badges so re-opened/restored sessions
             # render their badges instead of a fresh checkbox.
             if task.status is not TaskStatus.PENDING:
@@ -1324,7 +1332,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._status_label.configure(
             text="Заполнение из текста...", text_color=TEXT_SECONDARY,
         )
-        model = self._model_var.get().strip() or "anthropic/claude-sonnet-4.5"
+        model = self._model_var.get().strip() or "google/gemini-3.5-flash"
         threading.Thread(
             target=self._run_autofill_worker,
             args=(free_text, model, api_key),

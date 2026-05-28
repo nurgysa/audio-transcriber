@@ -45,6 +45,33 @@ def _get_vendored_binary(name: str) -> str | None:
     return candidate if os.path.isfile(candidate) else None
 
 
+def get_app_icon_path() -> str | None:
+    """Return absolute path to the .ico app icon, or None if missing.
+
+    Resolution order:
+      1. PyInstaller bundle (frozen mode) — sys._MEIPASS/vendor/icons/audio_transcriber.ico
+      2. Repo-root vendor/icons/ — for dev source-mode runs
+      3. None — caller skips iconbitmap() rather than crashing on missing file
+
+    Used by ui.app.App.__init__ to set self.iconbitmap() for the window
+    title bar (Explorer/Taskbar uses the .exe-embedded icon set via
+    audio_transcriber.spec's EXE(icon=...) parameter).
+    """
+    candidates: list[str] = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidates.append(os.path.join(meipass, "vendor", "icons", "audio_transcriber.ico"))
+    # Dev source-mode fallback: repo root vendor/icons/ relative to utils.py
+    candidates.append(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "vendor", "icons", "audio_transcriber.ico",
+    ))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
 def get_ffmpeg_path() -> str | None:
     """Return absolute path to ffmpeg, or None if neither bundled nor on PATH.
 

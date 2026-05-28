@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import tkinter as tk
 from typing import TYPE_CHECKING
 
 import customtkinter as ctk
@@ -10,7 +11,7 @@ import customtkinter as ctk
 from logging_setup import init_logging
 from recorder import Recorder
 from theme import BG
-from utils import load_config, save_config
+from utils import get_app_icon_path, load_config, save_config
 
 # Submodule re-exports. ``main`` lives in ``.main_entry`` so the repo-root
 # ``app.py`` (the faulthandler bootstrap) keeps working through its existing
@@ -55,6 +56,43 @@ __all__ = [
 ]
 
 
+def _get_windows_work_area(tk_widget) -> tuple[int, int, int, int]:
+    """Return (x, y, width, height) of the Windows work area — the screen
+    minus the taskbar. Used by App.__init__ to size the borderless kiosk
+    window so the taskbar doesn't overlap the bottom buttons.
+
+    Raises OSError on non-Windows or if the Win32 call fails — caller
+    should fall back to a regular maximized window in that case.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class RECT(ctypes.Structure):
+        _fields_ = [
+            ("left", wintypes.LONG),
+            ("top", wintypes.LONG),
+            ("right", wintypes.LONG),
+            ("bottom", wintypes.LONG),
+        ]
+
+    # SPI_GETWORKAREA = 0x0030. SystemParametersInfoW reads the work-area
+    # rectangle into the RECT we pass via byref. Returns nonzero on success.
+    rect = RECT()
+    ok = ctypes.windll.user32.SystemParametersInfoW(
+        0x0030, 0, ctypes.byref(rect), 0,
+    )
+    if not ok:
+        raise OSError("SystemParametersInfo(SPI_GETWORKAREA) failed")
+
+    # winfo_screen* is the fall-back source of screen dimensions if
+    # SystemParametersInfo returns a degenerate rect; defensive.
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width < 200 or height < 200:
+        raise OSError(f"work area too small: {width}×{height}")
+    return rect.left, rect.top, width, height
+
+
 class App(
     DialogsMixin,
     RecorderMixin,
@@ -67,15 +105,68 @@ class App(
         super().__init__()
 
         self.title("Audio Transcriber")
-        self.geometry("780x700")
-        self.minsize(680, 600)
+        # Geometry will be overwritten by the fullscreen setup below — kept
+        # only as the un-fullscreen fallback if the user hits Esc/F11 then
+        # the window manager needs a reasonable default size to revert to.
+        self.geometry("1280x800")
+        self.minsize(960, 680)
+        # Set the window title-bar icon. CustomTkinter sets its own default
+        # icon during super().__init__() so we must call iconbitmap AFTER.
+        # The .exe-embedded icon (Explorer/Taskbar) is set separately via
+        # audio_transcriber.spec EXE(icon=...). Silently skip if the .ico
+        # file is absent — dev runs without `python scripts/gen_icon.py`
+        # shouldn't crash startup.
+        _icon_path = get_app_icon_path()
+        if _icon_path:
+            try:
+                self.iconbitmap(_icon_path)
+            except tk.TclError:
+                # iconbitmap can fail on some WSL/Linux/Wine setups even
+                # when the file exists — fall back silently rather than
+                # blocking app startup over a cosmetic icon.
+                pass
+
+        # Maximize on launch (Windows 'zoomed' state) — fills the work area
+        # but KEEPS the title bar and X button visible. Earlier iterations
+        # tried overrideredirect+brute-force-geometry for a kiosk feel, but
+        # it trapped the maintainer's own session 2026-05-28: borderless
+        # windows aren't enumerated in Task Manager's Apps view, leaving
+        # zero exit options if the Esc binding didn't fire. Lesson:
+        # NEVER hide the title bar without a 100%-verified escape hatch.
+        #
+        # If state('zoomed') silently fails (intermittent CTk init race
+        # seen earlier in the same session), fall back to explicit Win32
+        # work-area geometry — but WITHOUT overrideredirect, so the user
+        # always retains the OS window controls (X / minimize / drag).
+        try:
+            self.state("zoomed")
+        except tk.TclError:
+            try:
+                work_x, work_y, work_w, work_h = _get_windows_work_area(self)
+                self.geometry(f"{work_w}x{work_h}+{work_x}+{work_y}")
+            except (tk.TclError, OSError, AttributeError):
+                pass
+
+        # F11 toggles maximize — standard chord users expect. No Escape
+        # binding because we kept the title bar (X button is the obvious
+        # exit; binding Escape there would hijack the key from form fields).
+        def _toggle_maximize(_event=None) -> None:
+            try:
+                if self.state() == "zoomed":
+                    self.state("normal")
+                else:
+                    self.state("zoomed")
+            except tk.TclError:
+                pass
+
+        self.bind("<F11>", _toggle_maximize)
         # Apply the saved appearance mode BEFORE constructing widgets so
         # tuple colors in theme.py resolve to the right palette on first
         # paint. Default "system" follows the OS setting. Persisted via
         # _on_appearance_changed when the user switches in Settings.
-        saved_appearance = load_config().get("appearance_mode", "Системная")
+        saved_appearance = load_config().get("appearance_mode", "Тёмная")
         ctk.set_appearance_mode(
-            APPEARANCE_MODES.get(saved_appearance, "system"),
+            APPEARANCE_MODES.get(saved_appearance, "dark"),
         )
         self.configure(fg_color=BG)
 

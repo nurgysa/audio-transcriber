@@ -6,7 +6,7 @@
   "model": "large-v3 (максимум)",
   "speaker_count": "Авто",
   "normalize_audio": true,
-  "denoise_audio": false,
+  "denoise_audio": true,
   "transcribe_device": "Авто",
   "diarize_device": "Авто",
   "cloud_enabled": true,
@@ -22,5 +22,5 @@
   "gdrive_last_backup": "",
   "gdrive_backup_frequency": "off",
   "gdrive_root_folder_id": "",
-  "appearance_mode": "Системная"
+  "appearance_mode": "Тёмная"
 }
