@@ -115,15 +115,16 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         # had stripped both the X button AND the Task Manager Apps-view
         # entry). Keep the normal title bar — that's the user's exit.
         parent.update_idletasks()
-        # Match parent's geometry exactly — the main window opens in kiosk
-        # fullscreen (commits 88a17c0 → c2a2d24), so the dialog should
-        # feel like a natural overlay on the full screen rather than a
-        # small floating box. User feedback (2026-05-28) explicitly
-        # requested this after a brief 1280-cap iteration in PR #73
-        # felt cramped. Floor at 960x680 covers the (unlikely) case
-        # where the parent itself was resized small.
+        # Match parent's geometry but reserve vertical room for the
+        # dialog's own title bar — otherwise dialog.height = parent.height
+        # but the actual window (incl. our title bar) overflows below
+        # the taskbar, hiding the footer row (Send / Retry / Close).
+        # 60 px buffer = ~30 title bar + ~30 safety margin if parent
+        # somehow used full screen height instead of work-area height.
+        # User feedback 2026-05-28: PR #74's no-cap version hid the
+        # footer; this re-introduces a small vertical breathing room.
         w = max(960, parent.winfo_width())
-        h = max(680, parent.winfo_height())
+        h = max(680, parent.winfo_height() - 60)
         x = parent.winfo_rootx()
         y = parent.winfo_rooty()
         self.geometry(f"{w}x{h}+{x}+{y}")
