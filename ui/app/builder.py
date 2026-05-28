@@ -182,8 +182,8 @@ def build_ui(app):
     )
     # Visible API-key field — populated from the per-provider dict
     # for whichever provider is currently selected. _on_cloud_provider_changed
-    # swaps it on dropdown change; _paste_cloud_api_key writes it back
-    # into the dict for the active provider.
+    # swaps it on dropdown change. Lazy save to the dict happens at
+    # transcribe time (transcription_mixin _on_transcribe_clicked).
     app._cloud_api_key_var = ctk.StringVar(
         value=app._cloud_api_keys.get(
             app._cloud_provider_var.get(), ""

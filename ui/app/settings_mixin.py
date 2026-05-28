@@ -212,28 +212,6 @@ class SettingsMixin:
             except tk.TclError:
                 pass
 
-    def _paste_cloud_api_key(self) -> None:
-        """Paste-from-clipboard helper scoped to the cloud API key field.
-        Persists into the per-provider dict under the *currently selected*
-        provider name.
-
-        TclError = empty clipboard or non-text content (silent — user just
-        clicked Paste without anything to paste). OSError = config save
-        failed (real problem: key won't persist across launches).
-        """
-        try:
-            text = self.clipboard_get().strip()
-            self._cloud_api_key_var.set(text)
-            if text:
-                provider = self._cloud_provider_var.get()
-                self._cloud_api_keys[provider] = text
-                self._config["cloud_api_keys"] = self._cloud_api_keys
-                save_config(self._config)
-        except tk.TclError:
-            return
-        except OSError as e:
-            logger.warning("Failed to persist cloud API key to config.json: %s", e)
-
     def _select_file(self):
         path = filedialog.askopenfilename(
             title="Выберите аудиофайл",

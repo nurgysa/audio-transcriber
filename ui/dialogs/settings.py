@@ -29,7 +29,6 @@ from theme import (
     BORDER,
     FONT,
     GREEN,
-    INPUT_BG,
     RED,
     SURFACE,
     TEXT_PRIMARY,
@@ -101,23 +100,12 @@ class SettingsDialog(ctk.CTkToplevel):
         self._build_glide_section(body)
         self._build_gdrive_section(body)
 
-        # Wire reactive warning: fires whenever language or cloud provider
-        # changes so the label stays in sync without requiring a Save button.
-        # The traced StringVars live on `self._parent` (App) and outlive the
-        # dialog, so the trace tokens must be kept and unregistered in
-        # destroy() — otherwise reopening the dialog stacks duplicate
-        # callbacks that fire on already-destroyed dialogs and raise TclError.
-        self._trace_lang = self._parent._lang_var.trace_add(
-            "write", self._update_mixed_warning,
-        )
-        self._trace_provider = self._parent._cloud_provider_var.trace_add(
-            "write", self._update_mixed_warning,
-        )
-        # Run once immediately so an already-loaded incompatible config
-        # (e.g. lang=mixed + provider=Deepgram from config.json) shows the
-        # warning as soon as the dialog opens — not only after the user
-        # interacts with a dropdown.
-        self._update_mixed_warning()
+        # Reactive trace wiring for the first-run banner is added in
+        # Task 7 of the redesign plan — see
+        # docs/superpowers/plans/2026-05-28-settings-ux-redesign-plan.md.
+        # In this intermediate state (post-Task-5, pre-Task-7) the dialog
+        # has no reactive cloud-provider/lang warning — Task 7 reintroduces
+        # it as a global banner above the tab bar.
 
         # --- Footer ---
         footer = ctk.CTkFrame(self, fg_color="transparent")
@@ -130,20 +118,23 @@ class SettingsDialog(ctk.CTkToplevel):
     def destroy(self) -> None:
         """Remove app-level Var traces before the Toplevel is torn down.
 
-        ``_lang_var`` and ``_cloud_provider_var`` live on the App and outlive
-        the dialog. Without cleanup, reopening Settings registers a second
-        trace pointing at the previous (destroyed) dialog's bound method, and
-        the next dropdown change fires both — the stale one raises TclError
-        ("invalid command name") on the destroyed widget, and the destroyed
-        dialog instance is held alive by the trace, leaking memory.
+        Var trace tokens live on the App and outlive the dialog. Without
+        cleanup, reopening Settings registers a second trace pointing at
+        the previous (destroyed) dialog's bound method — fires both, the
+        stale one raises TclError on the destroyed widget, and the destroyed
+        dialog instance is held alive by the trace (memory leak).
 
         Wrapped in try/except TclError because the underlying Var may have
-        already been GC'd (parent App teardown ordering) — in that case there
-        is nothing left to unregister.
+        already been GC'd during parent teardown.
+
+        Task 7 of the redesign plan adds new trace tokens for the global
+        banner. Each token is opt-in via getattr — this loop accepts both
+        pre-Task-7 (empty) and post-Task-7 (populated) states.
         """
         for var, token in (
             (self._parent._lang_var, getattr(self, "_trace_lang", None)),
             (self._parent._cloud_provider_var, getattr(self, "_trace_provider", None)),
+            (self._parent._cloud_api_key_var, getattr(self, "_trace_api_key", None)),
         ):
             if token is not None:
                 try:
@@ -197,43 +188,6 @@ class SettingsDialog(ctk.CTkToplevel):
             command=self._parent._on_language_changed,
         ).grid(row=0, column=1, padx=4, pady=6, sticky="w")
 
-    def _update_mixed_warning(self, *_args) -> None:
-        """Show or hide the inline incompatibility warning in the cloud section.
-
-        Fires when either the language or cloud-provider StringVar changes, and
-        once at __init__ end to reflect a pre-loaded config state.
-
-        Shows a warning when:
-          - the selected language label resolves to code ``"mixed"``
-          - AND the active cloud provider has ``supports_mixed = False``
-            (class attribute, no instantiation required)
-
-        Currently the only provider with ``supports_mixed = False`` is Deepgram.
-        """
-        lang_label = self._parent._lang_var.get()
-        lang_code = LANGUAGES.get(lang_label)
-        if lang_code != "mixed":
-            self._mixed_warning.grid_remove()
-            return
-
-        provider_name = self._parent._cloud_provider_var.get()
-        provider_cls = PROVIDERS.get(provider_name)
-        if provider_cls is None:
-            self._mixed_warning.grid_remove()
-            return
-
-        if not provider_cls.supports_mixed:
-            self._mixed_warning.configure(
-                text=(
-                    f"⚠ {provider_name} не поддерживает "
-                    "«Смешанный (KZ+RU+EN)». "
-                    "Выбери другой провайдер или язык."
-                ),
-            )
-            self._mixed_warning.grid()
-        else:
-            self._mixed_warning.grid_remove()
-
     def _build_audio_section(self, parent) -> None:
         section = self._section_card(parent, "Аудио", row=2)
         check = ctk.CTkCheckBox(
@@ -264,8 +218,17 @@ class SettingsDialog(ctk.CTkToplevel):
         )
 
     def _build_cloud_section(self, parent) -> None:
-        section = self._section_card(parent, "Транскрибация (cloud API)", row=3)
+        """Cloud STT provider + API key + privacy + pricing disclosure.
 
+        Key handling via api_key_row (no validate — Cloud STT validation
+        is deferred to a follow-up PR per the spec). Provider dropdown
+        stays as a separate row because its callback wires into the
+        first-run banner's mixed-lang condition. Captures
+        self._cloud_api_key_entry so the banner can focus_set() it.
+        """
+        section = self._section_card(parent, "Облачное распознавание", row=3)
+
+        # Provider dropdown
         label(section, "Провайдер").grid(
             row=0, column=0, padx=(4, 8), pady=6, sticky="w",
         )
@@ -274,46 +237,28 @@ class SettingsDialog(ctk.CTkToplevel):
             command=self._parent._on_cloud_provider_changed,
         ).grid(row=0, column=1, padx=4, pady=6, sticky="w")
 
-        # Inline warning shown when language=mixed AND the chosen provider
-        # has supports_mixed=False (currently only Deepgram). Initially
-        # hidden; _update_mixed_warning() toggles visibility reactively.
-        self._mixed_warning = ctk.CTkLabel(
-            section, text="",
-            font=ctk.CTkFont(family=FONT, size=11),
-            text_color=RED,
-            anchor="w",
-            wraplength=340,
+        # API key row — no validate (deferred). Capture entry ref so the
+        # global first-run banner can focus_set() it on click.
+        refs = api_key_row(
+            section,
+            label_text="API ключ",
+            key_var=self._parent._cloud_api_key_var,
+            placeholder="API ключ провайдера",
+            on_validate=None,
+            row=1,
         )
-        self._mixed_warning.grid(
-            row=1, column=0, columnspan=3, padx=4, pady=(0, 2), sticky="w",
-        )
-        self._mixed_warning.grid_remove()  # hidden until needed
+        self._cloud_api_key_entry = refs["entry"]
 
-        label(section, "API key").grid(
-            row=2, column=0, padx=(4, 8), pady=6, sticky="w",
-        )
-        ctk.CTkEntry(
-            section, textvariable=self._parent._cloud_api_key_var, height=36,
-            corner_radius=10, border_color=BORDER, border_width=1,
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(family=FONT, size=12),
-            placeholder_text="API ключ провайдера",
-            show="•",  # Mask the key visually — same UX as a password field.
-        ).grid(row=2, column=1, padx=4, pady=6, sticky="ew")
-        tonal_button(
-            section, text="Вставить",
-            command=self._parent._paste_cloud_api_key, width=100,
-        ).grid(row=2, column=2, padx=(4, 4), pady=6)
-
-        # Disclosure. Audio leaves the user's machine and ends up on a
-        # third-party server, which has privacy/compliance implications.
-        # Surfacing this in the cloud section is the cheapest mitigation.
+        # Disclosure: audio leaves the user's machine and ends up on a
+        # third-party server. Surfacing this in the cloud section is the
+        # cheapest mitigation. Placed AFTER the key field so it reads
+        # as context for the field it applies to.
         label(
             section,
             "⚠ Аудио загружается на сервер провайдера. "
             "Не используй для конфиденциальных записей.",
             anchor="w",
-        ).grid(row=3, column=0, columnspan=3, padx=4, pady=(2, 6), sticky="w")
+        ).grid(row=3, column=0, columnspan=4, padx=4, pady=(2, 6), sticky="w")
         # Static price summary. Cheapest with diarization first.
         label(
             section,
@@ -321,7 +266,7 @@ class SettingsDialog(ctk.CTkToplevel):
             "Deepgram ~$0.43/ч • Gladia ~$0.61/ч • "
             "Speechmatics ~$1.04/ч.",
             anchor="w",
-        ).grid(row=4, column=0, columnspan=3, padx=4, pady=(0, 4), sticky="w")
+        ).grid(row=4, column=0, columnspan=4, padx=4, pady=(0, 4), sticky="w")
 
     def _build_dictionaries_section(self, parent) -> None:
         section = self._section_card(parent, "Словари", row=4)

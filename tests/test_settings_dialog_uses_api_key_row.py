@@ -28,6 +28,7 @@ def test_settings_calls_api_key_row_at_least_four_times():
     via 'api_key_row(' rather than 'api_key_row,' to skip import lines."""
     source = SETTINGS_PATH.read_text(encoding="utf-8")
     n_calls = source.count("api_key_row(")
-    assert n_calls >= 3, (
-        f"Expected ≥ 3 api_key_row(...) calls after Task 4, got {n_calls}"
+    assert n_calls >= 4, (
+        f"Expected ≥ 4 api_key_row(...) calls (Cloud STT + OpenRouter + "
+        f"Linear + Glide), got {n_calls}"
     )
