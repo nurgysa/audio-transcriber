@@ -585,6 +585,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         from tasks.linear_client import LinearError
         from tasks.openrouter_client import OpenRouterClient, OpenRouterError
         from tasks.persistence import save_tasks_raw
+        from tasks.trello_client import TrelloError
 
         backend = openrouter = None
         try:
@@ -692,7 +693,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 self.after(
                     0, self._on_extract_error, str(e), e.raw_response,
                 )
-        except (OpenRouterError, LinearError, GlideError) as e:
+        except (OpenRouterError, LinearError, GlideError, TrelloError) as e:
             if not self._cancel_event.is_set():
                 self.after(0, self._on_extract_error, str(e), None)
         except Exception as e:

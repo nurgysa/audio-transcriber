@@ -350,3 +350,12 @@ def test_factory_unknown_backend_raises_value_error():
     from tasks.backends import backend_from_name
     with pytest.raises(ValueError, match="Unknown backend"):
         backend_from_name("jira", {})
+
+
+def test_trello_create_id_short_zero_yields_hash_zero():
+    from tasks.backends.trello import TrelloBackend
+    client = MagicMock()
+    client.create_card.return_value = {"id": "c-0", "idShort": 0, "shortLink": "zz", "url": "https://trello.com/c/zz/0-x"}
+    b = TrelloBackend(client)
+    issue = b.create("l-1", Task(title="A"))
+    assert issue.identifier == "#0"   # 0 is not None → "#0", NOT the shortLink fallback

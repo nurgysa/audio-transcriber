@@ -70,3 +70,9 @@ def test_dialog_uses_backend_dicts_and_helper():
 def test_dialog_enables_trello_backend():
     src = _DIALOG.read_text(encoding="utf-8")
     assert 'self._config.get("trello_enabled"' in src
+
+
+def test_extract_dialog_catches_trello_error():
+    src = _DIALOG.read_text(encoding="utf-8")
+    assert "from tasks.trello_client import TrelloError" in src
+    assert "OpenRouterError, LinearError, GlideError, TrelloError" in src
