@@ -278,18 +278,21 @@ def save_segments(folder: str, segments: list[dict] | None) -> None:
 
 
 def save_speakers(
-    folder: str, project_id: str | None, participant_ids: list[str]
+    folder: str,
+    project_id: str | None,
+    participant_ids: list[str],
+    speaker_map: dict[str, str] | None = None,
 ) -> None:
     """Atomically write the meeting's context selection to <folder>/speakers.json.
 
-    Shape is forward-compatible with PR-2's per-speaker attribution: the empty
-    "speakers" map is the slot that {SPEAKER_00: person_id, ...} fills later.
-    PR-1 only ever writes project_id + participants.
+    ``speaker_map`` is the per-speaker attribution: raw provider label
+    (e.g. "SPEAKER_00") → person_id. Defaults to None → writes an empty
+    map, preserving the PR-1 caller shape exactly.
     """
     payload = {
         "project_id": project_id,
         "participants": list(participant_ids),
-        "speakers": {},
+        "speakers": dict(speaker_map) if speaker_map else {},
     }
     target = os.path.join(folder, "speakers.json")
     tmp = os.path.join(folder, ".speakers.json.tmp")
