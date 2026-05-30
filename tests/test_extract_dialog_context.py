@@ -24,3 +24,21 @@ def test_dialog_uses_default_participants():
 def test_dialog_restores_selection_from_speakers_json():
     src = SRC.read_text(encoding="utf-8")
     assert "load_speakers" in src
+
+
+def test_run_extraction_passes_context_to_both_calls():
+    src = SRC.read_text(encoding="utf-8")
+    # render once, thread into extract() and generate()
+    assert "render_meeting_context(" in src
+    assert src.count("context=meeting_context") >= 2
+
+
+def test_protocol_speakers_uses_real_names():
+    src = SRC.read_text(encoding="utf-8")
+    assert "speakers=[p.full_name for p in people]" in src
+    assert "speakers=[],  # cloud-only build has no voice library" not in src
+
+
+def test_run_extraction_persists_speakers_json():
+    src = SRC.read_text(encoding="utf-8")
+    assert "save_speakers(" in src

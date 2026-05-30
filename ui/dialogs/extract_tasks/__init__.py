@@ -686,9 +686,11 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._clear_form_vars()
         self._saved_label.configure(text="")
 
+        project = self._selected_context_project()
+        people = self._selected_context_people()
         threading.Thread(
             target=self._run_extraction,
-            args=(container, model, backend_name),
+            args=(container, model, backend_name, project, people),
             daemon=True,
         ).start()
 
@@ -701,7 +703,10 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 return c
         return None
 
-    def _run_extraction(self, container, model: str, backend_name: str) -> None:
+    def _run_extraction(
+        self, container, model: str, backend_name: str, project, people: list,
+    ) -> None:
+        from directory.context import render_meeting_context
         from tasks.backends import backend_from_name
         from tasks.extractor import ExtractionError, extract
         from tasks.glide_client import GlideError
@@ -709,6 +714,8 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         from tasks.openrouter_client import OpenRouterClient, OpenRouterError
         from tasks.persistence import save_tasks_raw
         from tasks.trello_client import TrelloError
+        from utils import save_speakers
+        meeting_context = render_meeting_context(people, project) or None
 
         backend = openrouter = None
         try:
@@ -739,6 +746,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 openrouter_client=openrouter,
                 members=members,
                 labels=labels,
+                context=meeting_context,
             )
 
             if self._cancel_event.is_set():
@@ -757,6 +765,23 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 "transcript_lang": self._transcript_lang or "auto",
             }
             save_tasks_raw(self._history_folder, result["tasks"], meta)
+
+            # Phase A UI part 2: remember the meeting's context selection so a
+            # re-open restores it (and PR-2 can extend speakers.json with the
+            # per-speaker map). Only write when something was selected; a write
+            # failure must not block the committed task extraction.
+            if project is not None or people:
+                try:
+                    save_speakers(
+                        self._history_folder,
+                        project.id if project else None,
+                        [p.id for p in people],
+                    )
+                except OSError as exc:
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "speakers.json write failed: %s", exc,
+                    )
 
             # Task 6 (MVP v5): opt-in protocol generation, reusing the same
             # OpenRouter client and user-chosen model. Runs AFTER save_tasks_raw
@@ -788,11 +813,12 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 try:
                     proto_result = protocol_generator.generate(
                         transcript=self._transcript,
-                        speakers=[],  # cloud-only build has no voice library
+                        speakers=[p.full_name for p in people],
                         meeting_date="",  # not tracked at dialog level in v1.0
                         lang=self._transcript_lang,
                         model=model,
                         openrouter_client=openrouter,
+                        context=meeting_context,
                     )
                     proto_path = Path(self._history_folder) / "protocol.md"
                     proto_path.write_text(
