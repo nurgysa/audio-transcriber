@@ -334,6 +334,11 @@ class DirectoryDialog(ctk.CTkToplevel):
         self._store.delete_project(pid)
         self._render_projects()
         self._clear_project_form()
+        # delete_project ref-cascades the id out of every person; rebuild the
+        # People form's checkboxes from the live selection so the just-removed
+        # project can't linger as a stale ticked box and get re-saved.
+        selected = {cid for cid, var in self._project_check_vars.items() if var.get()}
+        self._rebuild_person_projects(selected)
 
     def _close(self) -> None:
         self.grab_release()

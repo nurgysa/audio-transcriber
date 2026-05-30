@@ -18,7 +18,8 @@ def test_dialog_is_backed_by_directory_store():
     src = SRC.read_text(encoding="utf-8")
     assert "DirectoryStore" in src
     assert "from directory.schema import" in src
-    assert "Person" in src and "Project" in src
+    assert "Person" in src
+    assert "Project" in src
 
 
 def test_dialog_persists_via_store_mutators():
