@@ -5,11 +5,12 @@ as parameters so tests can inject mocks. The dialog is responsible for
 constructing real clients and threading.
 
 Public API:
-    extract(transcript, team_id, model, lang, linear_client, openrouter_client)
+    extract(transcript, team_id, model, lang, linear_client, openrouter_client,
+        context=None)
         → {"tasks": list[Task], "corrections": int, "usage": dict,
            "model": str, "raw_response": str}
 
-    build_prompt(transcript, members, labels, lang) → list[dict]   # exposed for tests
+    build_prompt(transcript, members, labels, lang, context=None) → list[dict]   # exposed for tests
     parse_and_validate(raw_text, members, labels) → (list[Task], int)
     ExtractionError                                # raised on unrecoverable LLM-output issues
 """
@@ -70,6 +71,7 @@ def build_prompt(
     members: list[dict],
     labels: list[dict],
     lang: str | None,
+    context: str | None = None,
 ) -> list[dict]:
     """Construct the system+user message pair fed to OpenRouter."""
     member_lines = "\n".join(
@@ -99,7 +101,9 @@ def build_prompt(
         f"team_labels:\n{label_lines or '(none)'}\n"
     )
     lang_hint = f"language: {lang}" if lang else "language: auto-detected"
+    context_block = f"{context}\n\n" if context else ""
     user = (
+        f"{context_block}"
         f"Meeting transcript ({lang_hint}):\n\n"
         f"{transcript}\n\n"
         "Return only the JSON object."
@@ -248,6 +252,7 @@ def extract(
     # the explicit members/labels win.
     members: list | None = None,
     labels: list | None = None,
+    context: str | None = None,
     team_id: str | None = None,
     linear_client: _LinearClient | None = None,
 ) -> dict:
@@ -266,7 +271,7 @@ def extract(
     members = members or []
     labels  = labels  or []
 
-    messages = build_prompt(transcript, members, labels, lang)
+    messages = build_prompt(transcript, members, labels, lang, context=context)
 
     # First attempt: JSON mode. Some models reject response_format with 400;
     # we detect via "400" in the error message and retry once without.
