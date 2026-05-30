@@ -361,8 +361,14 @@ def build_ui(app):
     )
     app._btn_history.grid(row=0, column=3, padx=8, pady=4)
 
+    app._btn_directory = tonal_button(
+        btn_frame, text="Справочники", command=app._open_directory_dialog,
+        width=150,
+    )
+    app._btn_directory.grid(row=0, column=4, padx=8, pady=4)
+
     app._btn_cutter = tonal_button(
         btn_frame, text="Audio Cutter", command=app._open_cutter,
         width=140,
     )
-    app._btn_cutter.grid(row=0, column=4, padx=8, pady=4)
+    app._btn_cutter.grid(row=0, column=5, padx=8, pady=4)
