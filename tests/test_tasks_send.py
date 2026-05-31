@@ -229,6 +229,21 @@ def test_send_iter_calls_backend_with_container_id_and_task():
     assert args == ("container-uuid", task)
 
 
+def test_send_iter_persists_backend_ref_from_created_issue():
+    """Sender must write CreatedIssue.ref into task.backend_ref."""
+    task = _pending_task("A", local_id="a")
+    backend = _make_backend([
+        CreatedIssue(identifier="ENG-1", url="u", ref="node-uuid-1"),
+    ])
+    list(send_tasks_iter(
+        [task], container_id="t", backend=backend,
+        on_status_change=lambda t, s, **kw: None,
+        cancel_check=lambda: False,
+    ))
+    assert task.status is TaskStatus.SENT
+    assert task.backend_ref == "node-uuid-1"
+
+
 def test_send_marks_failed_on_trello_error_not_unexpected(caplog):
     """A TrelloError must be caught by the narrow handler (logged WARNING),
     not the belt-and-braces Exception handler (logged as 'unexpected error')."""

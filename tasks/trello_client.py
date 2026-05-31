@@ -18,6 +18,7 @@ Public API:
         list_containers()     → GET /members/me/boards (nested lists)
         board_context(lid)    → resolve list→board, returns {members, labels}
         create_card(...)      → POST /cards
+        add_comment(cid, txt) → POST /cards/{id}/actions/comments
         close()               → release HTTP session
 """
 from __future__ import annotations
@@ -236,3 +237,15 @@ class TrelloClient:
         if due:
             params["due"] = due
         return self._request("POST", "/cards", params=params)
+
+    def add_comment(self, card_id: str, text: str) -> None:
+        """Post a comment to an existing card (task-dedup).
+
+        ``card_id`` is the full card id (``card["id"]``), NOT the #idShort
+        badge value. Raises TrelloError on network/HTTP failure.
+        """
+        if not card_id:
+            raise TrelloError("card_id обязателен для add_comment")
+        self._request(
+            "POST", f"/cards/{card_id}/actions/comments", params={"text": text},
+        )

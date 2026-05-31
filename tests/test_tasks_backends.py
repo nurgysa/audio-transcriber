@@ -192,6 +192,7 @@ def test_glide_create_returns_short_uuid_prefix_and_url():
     b = GlideBackend(client)
     issue = b.create("b-1", Task(title="A"))
     assert issue.identifier == "467e14"   # first 6 chars of UUID
+    assert issue.ref == "467e1449-1737-4815-a8cc-12cff01b3a46"  # full UUID for dedup
     assert "467e1449-1737-4815-a8cc-12cff01b3a46" in issue.url
     assert issue.url.startswith("https://os.tensor-ai.tech/")
 
@@ -359,3 +360,51 @@ def test_trello_create_id_short_zero_yields_hash_zero():
     b = TrelloBackend(client)
     issue = b.create("l-1", Task(title="A"))
     assert issue.identifier == "#0"   # 0 is not None → "#0", NOT the shortLink fallback
+
+
+# ── Task-dedup: ref, supports_comments, add_comment ─────────────────
+
+
+def test_linear_create_sets_ref_to_node_uuid():
+    client = MagicMock()
+    client.create_issue.return_value = {
+        "id": "node-uuid-1", "identifier": "ENG-1", "url": "http://x/ENG-1",
+    }
+    issue = LinearBackend(client).create("team-1", Task(local_id="a", title="t"))
+    assert issue.ref == "node-uuid-1"
+    assert issue.identifier == "ENG-1"
+
+
+def test_linear_supports_comments_and_delegates():
+    client = MagicMock()
+    b = LinearBackend(client)
+    assert b.supports_comments is True
+    b.add_comment("node-uuid-1", "body")
+    client.add_comment.assert_called_once_with("node-uuid-1", "body")
+
+
+def test_trello_create_sets_ref_to_full_card_id():
+    from tasks.backends.trello import TrelloBackend
+    client = MagicMock()
+    client.create_card.return_value = {
+        "id": "card-full-id", "idShort": 7, "url": "http://x/7",
+    }
+    issue = TrelloBackend(client).create("list-1", Task(local_id="a", title="t"))
+    assert issue.ref == "card-full-id"
+    assert issue.identifier == "#7"
+
+
+def test_trello_supports_comments_and_delegates():
+    from tasks.backends.trello import TrelloBackend
+    client = MagicMock()
+    b = TrelloBackend(client)
+    assert b.supports_comments is True
+    b.add_comment("card-full-id", "body")
+    client.add_comment.assert_called_once_with("card-full-id", "body")
+
+
+def test_glide_opts_out_of_comments():
+    b = GlideBackend(MagicMock())
+    assert b.supports_comments is False
+    with pytest.raises(NotImplementedError, match="Glide does not support comments"):
+        b.add_comment("ref", "body")

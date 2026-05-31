@@ -44,6 +44,7 @@ class GlideBackend:
 
     name = "glide"
     display_name = "Glide"
+    supports_comments = False
 
     def __init__(self, client: GlideClient):
         self._client = client
@@ -90,7 +91,11 @@ class GlideBackend:
         actual_board = result.get("board_id") or container_id
         url = _glide_task_url(actual_board, task_uuid) if task_uuid else ""
 
-        return CreatedIssue(identifier=identifier, url=url)
+        return CreatedIssue(identifier=identifier, url=url, ref=task_uuid)
+
+    def add_comment(self, ref: str, body: str) -> None:
+        # Glide has no comment API — dedup gate never calls this; guard anyway.
+        raise NotImplementedError("Glide does not support comments")
 
     def close(self) -> None:
         self._client.close()

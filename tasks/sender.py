@@ -104,6 +104,7 @@ def send_tasks_iter(
         # backend-agnostic identifier+url returned by backend.create().
         task.linear_issue_id = issue.identifier
         task.linear_issue_url = issue.url
+        task.backend_ref = issue.ref
         task.send_error = None
         on_status_change(task, TaskStatus.SENT)
         yield task

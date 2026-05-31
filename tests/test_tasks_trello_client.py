@@ -253,3 +253,25 @@ def test_create_card_rejects_empty_list():
     c = TrelloClient("k", "t")
     with pytest.raises(TrelloError, match="id_list обязателен"):
         c.create_card(id_list="", name="T")
+
+
+# ── add_comment ─────────────────────────────────────────────────────────
+
+
+def test_add_comment_posts_to_actions_comments():
+    c = TrelloClient("k", "t")
+    with patch.object(
+        c._session, "request",
+        return_value=_resp(200, json_body={"id": "comment-1"}),
+    ) as mock_req:
+        c.add_comment("card-id-9", "снова обсуждалось")
+    method, url = mock_req.call_args.args[0], mock_req.call_args.args[1]
+    assert method == "POST"
+    assert url.endswith("/cards/card-id-9/actions/comments")
+    assert mock_req.call_args.kwargs["params"]["text"] == "снова обсуждалось"
+
+
+def test_add_comment_rejects_empty_card_id():
+    c = TrelloClient("k", "t")
+    with pytest.raises(TrelloError, match="card_id"):
+        c.add_comment("", "x")
