@@ -15,6 +15,7 @@ class LinearBackend:
 
     name = "linear"
     display_name = "Linear"
+    supports_comments = True
 
     def __init__(self, client: LinearClient):
         self._client = client
@@ -63,7 +64,11 @@ class LinearBackend:
         return CreatedIssue(
             identifier=issue.get("identifier") or "?",
             url=issue.get("url") or "",
+            ref=issue.get("id") or "",
         )
+
+    def add_comment(self, ref: str, body: str) -> None:
+        self._client.add_comment(ref, body)
 
     def close(self) -> None:
         self._client.close()

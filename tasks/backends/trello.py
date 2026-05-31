@@ -29,6 +29,7 @@ class TrelloBackend:
 
     name = "trello"
     display_name = "Trello"
+    supports_comments = True
 
     def __init__(self, client: TrelloClient):
         self._client = client
@@ -74,7 +75,14 @@ class TrelloBackend:
             identifier = f"#{id_short}"
         else:
             identifier = card.get("shortLink") or "?"
-        return CreatedIssue(identifier=identifier, url=card.get("url") or "")
+        return CreatedIssue(
+            identifier=identifier,
+            url=card.get("url") or "",
+            ref=card.get("id") or "",
+        )
+
+    def add_comment(self, ref: str, body: str) -> None:
+        self._client.add_comment(ref, body)
 
     def close(self) -> None:
         self._client.close()
