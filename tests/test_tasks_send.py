@@ -268,3 +268,107 @@ def test_send_marks_failed_on_trello_error_not_unexpected(caplog):
     # Narrow handler path → "send failed", NOT "unexpected error".
     assert any("send failed" in r.message for r in caplog.records)
     assert not any("unexpected error" in r.message for r in caplog.records)
+
+
+# ── Dedup: comment-on-match branch (PR-3) ────────────────────────────
+
+
+def _match(ref="old-ref", identifier="ENG-9", url="http://x/ENG-9"):
+    from tasks.dedup import SentTask
+    return SentTask(
+        title="t", backend="linear", container_id="team-A",
+        ref=ref, identifier=identifier, url=url,
+        meeting_name="M1", meeting_date="2026-05-01",
+    )
+
+
+class _CommentBackend:
+    """Stub backend that supports comments (records create/comment calls)."""
+    supports_comments = True
+
+    def __init__(self):
+        self.created = []
+        self.comments = []
+
+    def create(self, container_id, task):
+        self.created.append(task)
+        return CreatedIssue(identifier="NEW-1", url="http://x/NEW-1", ref="new-ref")
+
+    def add_comment(self, ref, body):
+        self.comments.append((ref, body))
+
+
+def test_send_comments_on_match_instead_of_create():
+    be = _CommentBackend()
+    task = _pending_task("снова обсудили", dup_match=_match(), dup_action="comment")
+    list(send_tasks_iter(
+        [task], container_id="team-A", backend=be,
+        on_status_change=lambda *a, **k: None,
+        cancel_check=lambda: False, meeting_label="Планёрка",
+    ))
+    assert be.created == []                         # no duplicate created
+    assert len(be.comments) == 1
+    ref, body = be.comments[0]
+    assert ref == "old-ref"                         # commented on the existing card
+    assert "Планёрка" in body                       # current meeting named in body
+    assert task.status is TaskStatus.COMMENTED
+    assert task.linear_issue_id == "ENG-9"          # badge points at existing card
+    assert task.linear_issue_url == "http://x/ENG-9"
+    assert task.backend_ref == "old-ref"
+
+
+def test_send_create_action_overrides_match():
+    be = _CommentBackend()
+    task = _pending_task("t", dup_match=_match(), dup_action="create")
+    list(send_tasks_iter(
+        [task], container_id="team-A", backend=be,
+        on_status_change=lambda *a, **k: None, cancel_check=lambda: False,
+    ))
+    assert len(be.created) == 1 and be.comments == []
+    assert task.status is TaskStatus.SENT
+    assert task.linear_issue_id == "NEW-1"
+
+
+class _NoCommentBackend:
+    """Backend that cannot comment — dup_match must fall back to create."""
+    supports_comments = False
+
+    def __init__(self):
+        self.created = []
+
+    def create(self, container_id, task):
+        self.created.append(task)
+        return CreatedIssue(identifier="N", url="u", ref="r")
+
+
+def test_send_falls_back_to_create_when_backend_lacks_comments():
+    be = _NoCommentBackend()
+    task = _pending_task("t", dup_match=_match(), dup_action="comment")
+    list(send_tasks_iter(
+        [task], container_id="team-A", backend=be,
+        on_status_change=lambda *a, **k: None, cancel_check=lambda: False,
+    ))
+    assert len(be.created) == 1
+    assert task.status is TaskStatus.SENT
+
+
+class _BoomCommentBackend:
+    """add_comment raises — the row must end FAILED, not COMMENTED."""
+    supports_comments = True
+
+    def create(self, container_id, task):
+        raise AssertionError("must not create when commenting")
+
+    def add_comment(self, ref, body):
+        raise LinearError("Linear 500: boom")
+
+
+def test_send_comment_failure_marks_failed():
+    be = _BoomCommentBackend()
+    task = _pending_task("t", dup_match=_match(), dup_action="comment")
+    list(send_tasks_iter(
+        [task], container_id="team-A", backend=be,
+        on_status_change=lambda *a, **k: None, cancel_check=lambda: False,
+    ))
+    assert task.status is TaskStatus.FAILED
+    assert task.send_error == "500"

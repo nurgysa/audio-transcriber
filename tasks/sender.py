@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable, Iterator
+from datetime import date
 
 from tasks.glide_client import GlideError
 from tasks.linear_client import LinearError
@@ -48,6 +49,7 @@ def send_tasks_iter(
     on_status_change: Callable,
     cancel_check: Callable[[], bool],
     retry_failed: bool = False,
+    meeting_label: str = "",
 ) -> Iterator[Task]:
     """Iterate selected tasks and POST each via backend.create().
 
@@ -75,8 +77,23 @@ def send_tasks_iter(
         task.send_error = None
         on_status_change(task, TaskStatus.SENDING)
 
+        # Dedup (PR-3): a matched task whose row action stays "comment" is
+        # commented onto the existing card instead of creating a duplicate.
+        # The supports_comments guard mirrors the dialog gate (belt-and-
+        # braces — a backend that can't comment falls back to create()).
+        use_comment = (
+            task.dup_match is not None
+            and task.dup_action == "comment"
+            and getattr(backend, "supports_comments", False)
+        )
+
         try:
-            issue = backend.create(container_id, task)
+            if use_comment:
+                backend.add_comment(
+                    task.dup_match.ref, _dup_comment_body(task, meeting_label),
+                )
+            else:
+                issue = backend.create(container_id, task)
         except (LinearError, GlideError, TrelloError) as e:
             task.status = TaskStatus.FAILED
             task.send_error = _short_error_code(str(e)) or "error"
@@ -99,14 +116,21 @@ def send_tasks_iter(
             yield task
             continue
 
-        task.status = TaskStatus.SENT
-        # Field names are Linear-flavoured (Phase 6.0) but hold the
-        # backend-agnostic identifier+url returned by backend.create().
-        task.linear_issue_id = issue.identifier
-        task.linear_issue_url = issue.url
-        task.backend_ref = issue.ref
+        if use_comment:
+            # Point the row at the EXISTING card and mark COMMENTED.
+            task.status = TaskStatus.COMMENTED
+            task.linear_issue_id = task.dup_match.identifier or None
+            task.linear_issue_url = task.dup_match.url or None
+            task.backend_ref = task.dup_match.ref
+        else:
+            task.status = TaskStatus.SENT
+            # Field names are Linear-flavoured (Phase 6.0) but hold the
+            # backend-agnostic identifier+url returned by backend.create().
+            task.linear_issue_id = issue.identifier
+            task.linear_issue_url = issue.url
+            task.backend_ref = issue.ref
         task.send_error = None
-        on_status_change(task, TaskStatus.SENT)
+        on_status_change(task, task.status)
         yield task
 
 
@@ -146,3 +170,15 @@ def _short_error_code(msg: str) -> str:
     if "таймаут" in msg_lower or "timeout" in msg_lower:
         return "timeout"
     return ""
+
+
+def _dup_comment_body(task: Task, meeting_label: str) -> str:
+    """RU comment posted to the existing card when a task recurs (dedup)."""
+    where = f' "{meeting_label}"' if meeting_label else ""
+    body = (
+        f"🔁 Эта задача снова обсуждалась на встрече{where} "
+        f"({date.today().isoformat()})."
+    )
+    if task.description:
+        body += f"\n\n{task.description}"
+    return body
