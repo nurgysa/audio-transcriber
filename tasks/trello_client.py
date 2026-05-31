@@ -18,6 +18,7 @@ Public API:
         list_containers()     → GET /members/me/boards (nested lists)
         board_context(lid)    → resolve list→board, returns {members, labels}
         create_card(...)      → POST /cards
+        add_comment(cid, txt) → POST /cards/{id}/actions/comments
         close()               → release HTTP session
 """
 from __future__ import annotations
