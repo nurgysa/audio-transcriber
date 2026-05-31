@@ -1022,23 +1022,24 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         import logging as _logging
 
         from tasks.dedup import (
-            FUZZY_HIGH,
-            FUZZY_LOW,
             build_sent_registry,
+            resolve_thresholds,
             select_match,
         )
         from tasks.openrouter_client import OpenRouterError
         from tasks.persistence import PersistenceError, load_tasks
         from utils import list_history_entries
 
-        high = float(self._config.get("dedup_fuzzy_high", FUZZY_HIGH))
-        low = float(self._config.get("dedup_fuzzy_low", FUZZY_LOW))
+        high, low = resolve_thresholds(self._config)
         try:
             registry = build_sent_registry(
                 list_history_entries(), load_tasks,
                 exclude_folder=self._history_folder,
             )
-        except (OSError, PersistenceError) as e:
+        except (OSError, PersistenceError, ValueError, KeyError) as e:
+            # OSError / PersistenceError: history I/O failures. ValueError /
+            # KeyError: a legacy/corrupt tasks.json that trips Task.from_dict —
+            # one bad past file must not sink an otherwise-successful extract.
             _logging.getLogger(__name__).warning("dedup registry build failed: %s", e)
             return
         for task in tasks:

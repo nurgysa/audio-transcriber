@@ -14,6 +14,7 @@ from tasks.dedup import (
     disambiguate_via_llm,
     find_candidates,
     normalize_title,
+    resolve_thresholds,
     select_match,
 )
 from tasks.openrouter_client import OpenRouterError
@@ -23,6 +24,42 @@ from tasks.schema import Task, TaskStatus
 
 def test_thresholds_are_sane():
     assert 0.0 < FUZZY_LOW < FUZZY_HIGH < 1.0
+
+
+# ── resolve_thresholds (PR-3 config override + best-effort fallback) ──
+
+
+def test_resolve_thresholds_reads_valid_config_values():
+    high, low = resolve_thresholds(
+        {"dedup_fuzzy_high": 0.9, "dedup_fuzzy_low": 0.6},
+    )
+    assert (high, low) == (0.9, 0.6)
+
+
+def test_resolve_thresholds_uses_defaults_when_keys_absent():
+    assert resolve_thresholds({}) == (FUZZY_HIGH, FUZZY_LOW)
+
+
+def test_resolve_thresholds_falls_back_on_nonnumeric_without_raising():
+    # The bug Codex flagged: float("nope") must NOT bubble out of the
+    # extraction worker and surface as a fake "extraction failed".
+    assert resolve_thresholds(
+        {"dedup_fuzzy_high": "nope", "dedup_fuzzy_low": "bad"},
+    ) == (FUZZY_HIGH, FUZZY_LOW)
+
+
+def test_resolve_thresholds_falls_back_per_key():
+    # One garbage key must not discard the other valid one (per-key policy).
+    high, low = resolve_thresholds(
+        {"dedup_fuzzy_high": "garbage", "dedup_fuzzy_low": 0.6},
+    )
+    assert (high, low) == (FUZZY_HIGH, 0.6)
+
+
+def test_resolve_thresholds_treats_none_as_unusable():
+    # float(None) raises TypeError (not ValueError) — guard must cover both.
+    high, _ = resolve_thresholds({"dedup_fuzzy_high": None})
+    assert high == FUZZY_HIGH
 
 
 def test_sent_task_is_frozen_value_object():

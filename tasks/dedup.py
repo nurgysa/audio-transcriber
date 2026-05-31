@@ -22,6 +22,7 @@ Public API:
     SentTask                 — value type for a previously-sent task
     normalize_title(str)     — shared title normalization (exposed for tests)
     FUZZY_HIGH / FUZZY_LOW   — score thresholds (config-overridable in PR-3)
+    resolve_thresholds(cfg)  — config thresholds with safe fallback
     build_sent_registry(...) — scan meeting history -> list[SentTask]
     find_candidates(...)     — fuzzy match within backend+container scope
     disambiguate_via_llm(...)— LLM resolves the borderline band
@@ -50,6 +51,48 @@ logger = logging.getLogger(__name__)
 # dedup_fuzzy_high / dedup_fuzzy_low.
 FUZZY_HIGH = 0.82
 FUZZY_LOW = 0.55
+
+
+def resolve_thresholds(
+    config: dict,
+    *,
+    default_high: float = FUZZY_HIGH,
+    default_low: float = FUZZY_LOW,
+) -> tuple[float, float]:
+    """Read ``dedup_fuzzy_high`` / ``dedup_fuzzy_low`` from a user config,
+    falling back to the module defaults on any unusable value.
+
+    This is the best-effort boundary for HAND-EDITED config. ``_run_dedup``
+    runs on the extraction worker *before* the success dispatch, and its
+    contract is that a dedup hiccup must never block showing the freshly-
+    extracted tasks. A bare ``float("oops")`` raises ``ValueError`` that
+    bubbles to the worker's ``except Exception`` and surfaces as a fake
+    "extraction failed". So this MUST NOT raise — it returns sane floats no
+    matter what the user typed into config.json.
+
+    Policy: **per-key** fallback — a garbage value for one key uses the
+    default for that key only, leaving a valid sibling untouched. A missing
+    key is not "bad" (it's just unset → default, no warning). Ordering
+    (low < high) is intentionally NOT validated here — out of scope for this
+    crash-safety fix.
+    """
+    resolved: list[float] = []
+    fell_back = False
+    for key, default in (
+        ("dedup_fuzzy_high", default_high),
+        ("dedup_fuzzy_low", default_low),
+    ):
+        try:
+            resolved.append(float(config.get(key, default)))
+        except (TypeError, ValueError):
+            # Hand-edited junk ("0.8x", null, []) — degrade to the default
+            # rather than let it sink an otherwise-successful extraction.
+            resolved.append(default)
+            fell_back = True
+    if fell_back:
+        logger.warning("invalid dedup_fuzzy_* in config; falling back to defaults")
+    return resolved[0], resolved[1]
+
 
 _PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
 _WS_RE = re.compile(r"\s+", re.UNICODE)

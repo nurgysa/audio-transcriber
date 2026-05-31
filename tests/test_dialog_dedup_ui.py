@@ -54,6 +54,24 @@ def test_dialog_passes_meeting_label_to_send():
     assert "meeting_label=" in DIALOG
 
 
+# ── best-effort guard hardening (Codex follow-up) ────────────────────
+
+
+def test_run_dedup_parses_thresholds_via_safe_resolver():
+    # Hand-edited non-numeric dedup_fuzzy_* must not raise out of the worker
+    # and surface as a fake "extraction failed". The bare float() was replaced
+    # by the best-effort resolve_thresholds() helper (unit-tested separately).
+    assert "resolve_thresholds" in DIALOG
+    assert 'float(self._config.get("dedup_fuzzy_high"' not in DIALOG
+
+
+def test_run_dedup_registry_guard_covers_schema_errors():
+    # build_sent_registry -> load_tasks -> Task.from_dict can raise ValueError
+    # / KeyError on a legacy/corrupt tasks.json; the guard must swallow those
+    # too so one bad past file can't sink a successful extraction.
+    assert "(OSError, PersistenceError, ValueError, KeyError)" in DIALOG
+
+
 # ── config keys (Task 6) ─────────────────────────────────────────────
 
 
