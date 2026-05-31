@@ -31,9 +31,10 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from tasks.persistence import PersistenceError
-from tasks.schema import TaskStatus
+from tasks.schema import Task, TaskStatus
 
 # Fuzzy-match score band (difflib.SequenceMatcher.ratio() on normalized
 # titles). >=HIGH: confident duplicate, no LLM. LOW..HIGH: borderline ->
@@ -126,3 +127,35 @@ def build_sent_registry(
                 meeting_date=meeting_date,
             ))
     return registry
+
+
+def find_candidates(
+    new_task: Task,
+    registry: list[SentTask],
+    *,
+    backend: str,
+    container_id: str,
+) -> list[tuple[SentTask, float]]:
+    """Score ``new_task`` against same-scope registry entries, best first.
+
+    Scope filter: only registry tasks with the SAME ``backend`` AND
+    ``container_id`` are eligible — a dedup comment must land on the same
+    team/board the new task would otherwise be created in. Score =
+    ``difflib.SequenceMatcher.ratio()`` on normalized titles, in [0, 1].
+    Returns ``(SentTask, score)`` pairs with ``score >= FUZZY_LOW``, sorted
+    by score descending (Python's stable sort keeps registry order on
+    ties). The caller distinguishes confident (``>= FUZZY_HIGH``) from
+    borderline (``FUZZY_LOW..FUZZY_HIGH``) and only LLM-checks the latter.
+    """
+    new_norm = normalize_title(new_task.title)
+    if not new_norm:
+        return []
+    scored: list[tuple[SentTask, float]] = []
+    for sent in registry:
+        if sent.backend != backend or sent.container_id != container_id:
+            continue
+        score = SequenceMatcher(None, new_norm, normalize_title(sent.title)).ratio()
+        if score >= FUZZY_LOW:
+            scored.append((sent, score))
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return scored

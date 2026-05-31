@@ -10,6 +10,7 @@ from tasks.dedup import (
     FUZZY_LOW,
     SentTask,
     build_sent_registry,
+    find_candidates,
     normalize_title,
 )
 from tasks.persistence import PersistenceError
@@ -127,3 +128,46 @@ def test_registry_defaults_backend_to_linear_and_skips_missing_tasks_json():
     assert len(reg) == 1
     assert reg[0].backend == "linear"  # defaulted
     assert reg[0].container_id == "t-9"
+
+
+# ── find_candidates ──────────────────────────────────────────────────
+
+
+def _reg_entry(title, ref, backend="linear", container="team-A"):
+    return SentTask(
+        title=title, backend=backend, container_id=container, ref=ref,
+        identifier="ENG-X", url="http://x", meeting_name="m", meeting_date="d",
+    )
+
+
+def test_find_candidates_scope_filters_backend_and_container():
+    registry = [
+        _reg_entry("Починить логин", "r-match"),                       # same scope
+        _reg_entry("Починить логин", "r-other-backend", backend="trello"),
+        _reg_entry("Починить логин", "r-other-team", container="team-B"),
+    ]
+    new = Task(title="починить логин")
+    out = find_candidates(new, registry, backend="linear", container_id="team-A")
+    assert [s.ref for s, _ in out] == ["r-match"]
+
+
+def test_find_candidates_sorted_by_score_desc_and_thresholded():
+    registry = [
+        _reg_entry("Купить кофе для офиса", "r-low"),       # unrelated -> below LOW
+        _reg_entry("Подготовить отчёт по продажам", "r-hi"),  # near-identical
+        _reg_entry("Подготовить отчет о продажах", "r-mid"),  # close variant
+    ]
+    new = Task(title="Подготовить отчёт по продажам за май")
+    out = find_candidates(new, registry, backend="linear", container_id="team-A")
+    refs = [s.ref for s, _ in out]
+    assert "r-low" not in refs                 # filtered: score < FUZZY_LOW
+    assert refs[0] == "r-hi"                    # best match first
+    scores = [score for _, score in out]
+    assert scores == sorted(scores, reverse=True)
+    assert all(sc >= FUZZY_LOW for sc in scores)
+
+
+def test_find_candidates_empty_new_title_returns_nothing():
+    registry = [_reg_entry("anything", "r")]
+    assert find_candidates(Task(title="!!!"), registry,
+                           backend="linear", container_id="team-A") == []
