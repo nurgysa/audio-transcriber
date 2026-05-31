@@ -91,7 +91,7 @@ class GlideBackend:
         actual_board = result.get("board_id") or container_id
         url = _glide_task_url(actual_board, task_uuid) if task_uuid else ""
 
-        return CreatedIssue(identifier=identifier, url=url)
+        return CreatedIssue(identifier=identifier, url=url, ref=task_uuid)
 
     def add_comment(self, ref: str, body: str) -> None:
         # Glide has no comment API — dedup gate never calls this; guard anyway.

@@ -192,6 +192,7 @@ def test_glide_create_returns_short_uuid_prefix_and_url():
     b = GlideBackend(client)
     issue = b.create("b-1", Task(title="A"))
     assert issue.identifier == "467e14"   # first 6 chars of UUID
+    assert issue.ref == "467e1449-1737-4815-a8cc-12cff01b3a46"  # full UUID for dedup
     assert "467e1449-1737-4815-a8cc-12cff01b3a46" in issue.url
     assert issue.url.startswith("https://os.tensor-ai.tech/")
 
@@ -405,5 +406,5 @@ def test_trello_supports_comments_and_delegates():
 def test_glide_opts_out_of_comments():
     b = GlideBackend(MagicMock())
     assert b.supports_comments is False
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(NotImplementedError, match="Glide does not support comments"):
         b.add_comment("ref", "body")
