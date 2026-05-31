@@ -143,6 +143,7 @@ def find_candidates(
     *,
     backend: str,
     container_id: str,
+    low: float = FUZZY_LOW,
 ) -> list[tuple[SentTask, float]]:
     """Score ``new_task`` against same-scope registry entries, best first.
 
@@ -150,10 +151,10 @@ def find_candidates(
     ``container_id`` are eligible — a dedup comment must land on the same
     team/board the new task would otherwise be created in. Score =
     ``difflib.SequenceMatcher.ratio()`` on normalized titles, in [0, 1].
-    Returns ``(SentTask, score)`` pairs with ``score >= FUZZY_LOW``, sorted
-    by score descending (Python's stable sort keeps registry order on
-    ties). The caller distinguishes confident (``>= FUZZY_HIGH``) from
-    borderline (``FUZZY_LOW..FUZZY_HIGH``) and only LLM-checks the latter.
+    Returns ``(SentTask, score)`` pairs with ``score >= low`` (default
+    ``FUZZY_LOW``), sorted by score descending (stable sort keeps registry
+    order on ties). The caller distinguishes confident (``>= FUZZY_HIGH``)
+    from borderline (``low..FUZZY_HIGH``) and only LLM-checks the latter.
     """
     new_norm = normalize_title(new_task.title)
     if not new_norm:
@@ -163,7 +164,7 @@ def find_candidates(
         if sent.backend != backend or sent.container_id != container_id:
             continue
         score = SequenceMatcher(None, new_norm, normalize_title(sent.title)).ratio()
-        if score >= FUZZY_LOW:
+        if score >= low:
             scored.append((sent, score))
     scored.sort(key=lambda pair: pair[1], reverse=True)
     return scored
@@ -232,3 +233,37 @@ def disambiguate_via_llm(
     if not match_id:
         return None
     return by_ref.get(match_id)
+
+
+def select_match(
+    new_task: Task,
+    registry: list[SentTask],
+    *,
+    backend: str,
+    container_id: str,
+    openrouter_client,
+    model: str,
+    high: float = FUZZY_HIGH,
+    low: float = FUZZY_LOW,
+) -> SentTask | None:
+    """Full dedup decision for one new task: find -> threshold -> (LLM).
+
+    Returns the matched ``SentTask`` or ``None``. Top score ``>= high`` is a
+    confident duplicate (NO LLM call). A non-empty borderline band
+    (``low..high``) is handed to ``disambiguate_via_llm``. Empty candidate
+    set -> ``None`` without any LLM spend. ``high``/``low`` come from config
+    (``dedup_fuzzy_high``/``dedup_fuzzy_low``) with the module constants as
+    defaults. This is the single Tk-free entry point the dialog driver calls
+    per task — it carries the whole matching policy so the UI layer stays a
+    thin assigner.
+    """
+    candidates = find_candidates(
+        new_task, registry, backend=backend, container_id=container_id, low=low,
+    )
+    if not candidates:
+        return None
+    if candidates[0][1] >= high:
+        return candidates[0][0]
+    return disambiguate_via_llm(
+        new_task, [c for c, _ in candidates], openrouter_client, model,
+    )

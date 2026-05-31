@@ -14,6 +14,7 @@ from tasks.dedup import (
     disambiguate_via_llm,
     find_candidates,
     normalize_title,
+    select_match,
 )
 from tasks.openrouter_client import OpenRouterError
 from tasks.persistence import PersistenceError
@@ -239,4 +240,64 @@ def test_disambiguate_propagates_non_400_errors():
 def test_disambiguate_empty_candidates_short_circuits_without_llm():
     llm = MagicMock()
     assert disambiguate_via_llm(Task(title="x"), [], llm, "m") is None
+    llm.complete.assert_not_called()
+
+
+# ── select_match (orchestrator) + find_candidates low override ────────
+
+
+def test_find_candidates_low_param_overrides_floor():
+    registry = [
+        _reg_entry("Подготовить отчёт по продажам", "r-hi"),
+        _reg_entry("Купить кофе для офиса", "r-low"),
+    ]
+    new = Task(title="Подготовить отчёт по продажам за май")
+    # A very high `low` filters out even the strong (~0.89) match.
+    out = find_candidates(new, registry, backend="linear",
+                          container_id="team-A", low=0.95)
+    assert [s.ref for s, _ in out] == []
+    # A low `low` keeps the strong match.
+    out2 = find_candidates(new, registry, backend="linear",
+                           container_id="team-A", low=0.30)
+    assert "r-hi" in [s.ref for s, _ in out2]
+
+
+def test_select_match_confident_skips_llm():
+    llm = MagicMock()
+    registry = [_reg_entry("Починить логин", "r-1")]
+    out = select_match(
+        Task(title="починить логин"), registry,
+        backend="linear", container_id="team-A",
+        openrouter_client=llm, model="m",
+    )
+    assert out is not None and out.ref == "r-1"
+    llm.complete.assert_not_called()  # score 1.0 >= FUZZY_HIGH -> no LLM
+
+
+def test_select_match_borderline_delegates_to_llm():
+    llm = MagicMock()
+    llm.complete.return_value = {"content": '{"match_id": "r-1"}'}
+    registry = [_reg_entry("Починить логин", "r-1")]
+    # Force the borderline band with explicit thresholds: the prefix match
+    # scores comfortably under 0.99 and over 0.2, so it is neither confident
+    # nor discarded -> the LLM is consulted. Deterministic regardless of the
+    # exact SequenceMatcher ratio.
+    out = select_match(
+        Task(title="Починить логин срочно сегодня вечером"), registry,
+        backend="linear", container_id="team-A",
+        openrouter_client=llm, model="m", high=0.99, low=0.2,
+    )
+    assert out is not None and out.ref == "r-1"
+    llm.complete.assert_called_once()
+
+
+def test_select_match_no_candidates_returns_none_without_llm():
+    llm = MagicMock()
+    registry = [_reg_entry("Совсем другое дело", "r-1")]
+    out = select_match(
+        Task(title="Подготовить квартальный бюджет"), registry,
+        backend="linear", container_id="team-A",
+        openrouter_client=llm, model="m",
+    )
+    assert out is None
     llm.complete.assert_not_called()
