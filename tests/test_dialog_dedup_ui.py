@@ -13,7 +13,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ROW = (ROOT / "ui" / "dialogs" / "extract_tasks" / "task_row.py").read_text("utf-8")
 DIALOG = (ROOT / "ui" / "dialogs" / "extract_tasks" / "__init__.py").read_text("utf-8")
-SETTINGS = (ROOT / "ui" / "dialogs" / "settings.py").read_text("utf-8")
 CONFIG = (ROOT / "config.example.json").read_text("utf-8")
 
 
@@ -53,3 +52,13 @@ def test_dialog_renders_dup_badge_after_row_build():
 
 def test_dialog_passes_meeting_label_to_send():
     assert "meeting_label=" in DIALOG
+
+
+# ── config keys (Task 6) ─────────────────────────────────────────────
+
+
+def test_config_example_has_dedup_keys():
+    import json
+    cfg = json.loads(CONFIG)
+    assert cfg["dedup_enabled"] is True
+    assert 0.0 < cfg["dedup_fuzzy_low"] < cfg["dedup_fuzzy_high"] < 1.0
