@@ -29,7 +29,11 @@ Public API:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
+
+from tasks.persistence import PersistenceError
+from tasks.schema import TaskStatus
 
 # Fuzzy-match score band (difflib.SequenceMatcher.ratio() on normalized
 # titles). >=HIGH: confident duplicate, no LLM. LOW..HIGH: borderline ->
@@ -74,3 +78,51 @@ def normalize_title(title: str) -> str:
     lowered = title.lower()
     no_punct = _PUNCT_RE.sub(" ", lowered)
     return _WS_RE.sub(" ", no_punct).strip()
+
+
+def build_sent_registry(
+    entries: list[dict],
+    load_tasks: Callable[[str], dict],
+    *,
+    exclude_folder: str | None = None,
+) -> list[SentTask]:
+    """Build the registry of previously-sent tasks from meeting history.
+
+    ``entries`` come from ``utils.list_history_entries()`` (folder_path /
+    folder_name / date_created). ``load_tasks`` is
+    ``tasks.persistence.load_tasks`` injected so tests pass a fixture
+    loader. A meeting contributes one ``SentTask`` per task with
+    ``status == SENT`` and a non-empty ``backend_ref`` — older sent tasks
+    predate ``backend_ref`` and have no comment-addressable id, so they
+    cannot be commented on and are skipped. ``exclude_folder`` (the current
+    meeting's ``folder_path``) never dedups against itself. Meetings with
+    no/broken ``tasks.json`` (PersistenceError) are silently skipped — most
+    meetings have no extracted tasks at all.
+    """
+    registry: list[SentTask] = []
+    for entry in entries:
+        folder = entry.get("folder_path")
+        if not folder or folder == exclude_folder:
+            continue
+        try:
+            loaded = load_tasks(folder)
+        except PersistenceError:
+            continue
+        backend = loaded.get("backend") or "linear"
+        container_id = loaded.get("team_id") or ""
+        meeting_name = entry.get("folder_name") or ""
+        meeting_date = entry.get("date_created") or ""
+        for task in loaded.get("tasks", []):
+            if task.status != TaskStatus.SENT or not task.backend_ref:
+                continue
+            registry.append(SentTask(
+                title=task.title,
+                backend=backend,
+                container_id=container_id,
+                ref=task.backend_ref,
+                identifier=task.linear_issue_id or "",
+                url=task.linear_issue_url or "",
+                meeting_name=meeting_name,
+                meeting_date=meeting_date,
+            ))
+    return registry
