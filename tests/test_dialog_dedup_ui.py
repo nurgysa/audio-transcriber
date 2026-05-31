@@ -31,3 +31,25 @@ def test_task_row_has_dedup_badge_and_toggle():
 def test_task_row_renders_commented_badge():
     # set_status_visual must handle the COMMENTED state explicitly.
     assert "COMMENTED" in ROW
+
+
+# ── dialog driver + wiring (Task 5) ──────────────────────────────────
+
+
+def test_dialog_runs_dedup_on_worker_before_success_dispatch():
+    assert "_run_dedup" in DIALOG
+    assert "build_sent_registry" in DIALOG
+    assert "select_match" in DIALOG
+    assert "supports_comments" in DIALOG          # gated on capability
+    assert "dedup_enabled" in DIALOG              # gated on config
+    # the driver runs before the success dispatch (so badges exist at render)
+    assert DIALOG.index("self._run_dedup(") < DIALOG.index(
+        "self.after(0, self._on_extract_success")
+
+
+def test_dialog_renders_dup_badge_after_row_build():
+    assert "set_dup_visual" in DIALOG
+
+
+def test_dialog_passes_meeting_label_to_send():
+    assert "meeting_label=" in DIALOG
