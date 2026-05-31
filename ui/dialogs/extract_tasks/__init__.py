@@ -967,6 +967,15 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
             self._remember_recent_model(model)
 
+            # PR-3: best-effort dedup pass on THIS worker thread (backend +
+            # openrouter still open) so matches are ready before the rows
+            # render. Never blocks the success dispatch on failure.
+            if not self._cancel_event.is_set():
+                self._run_dedup(
+                    result["tasks"], backend=backend, backend_name=backend_name,
+                    container_id=container.id, openrouter=openrouter, model=model,
+                )
+
             if not self._cancel_event.is_set():
                 self.after(0, self._on_extract_success, result, meta)
 
@@ -995,6 +1004,55 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                         self._active_clients.remove(c)
             if not self._cancel_event.is_set():
                 self.after(0, self._set_busy, False)
+
+    def _run_dedup(self, tasks, *, backend, backend_name, container_id,
+                   openrouter, model) -> None:
+        """Worker-thread best-effort dedup: set ``task.dup_match`` on
+        recurring tasks so the editor can offer "comment instead of dupe".
+
+        Skipped when the backend can't comment (Glide) or the user disabled
+        dedup. Any registry/LLM failure is logged and swallowed — a dedup
+        hiccup must never block showing the freshly-extracted tasks (badges
+        simply won't appear).
+        """
+        if not getattr(backend, "supports_comments", False):
+            return
+        if not bool(self._config.get("dedup_enabled", True)):
+            return
+        import logging as _logging
+
+        from tasks.dedup import (
+            build_sent_registry,
+            resolve_thresholds,
+            select_match,
+        )
+        from tasks.openrouter_client import OpenRouterError
+        from tasks.persistence import PersistenceError, load_tasks
+        from utils import list_history_entries
+
+        high, low = resolve_thresholds(self._config)
+        try:
+            registry = build_sent_registry(
+                list_history_entries(), load_tasks,
+                exclude_folder=self._history_folder,
+            )
+        except (OSError, PersistenceError, ValueError, KeyError) as e:
+            # OSError / PersistenceError: history I/O failures. ValueError /
+            # KeyError: a legacy/corrupt tasks.json that trips Task.from_dict —
+            # one bad past file must not sink an otherwise-successful extract.
+            _logging.getLogger(__name__).warning("dedup registry build failed: %s", e)
+            return
+        for task in tasks:
+            if self._cancel_event.is_set():
+                return
+            try:
+                task.dup_match = select_match(
+                    task, registry, backend=backend_name,
+                    container_id=container_id, openrouter_client=openrouter,
+                    model=model, high=high, low=low,
+                )
+            except OpenRouterError as e:
+                _logging.getLogger(__name__).warning("dedup match failed: %s", e)
 
     # ── UI updates marshalled from worker thread ─────────────────
 
@@ -1420,6 +1478,9 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                     error_code=task.send_error,
                 )
             self._task_rows.append(row)
+            # PR-3: show the dedup badge+toggle for pre-send matches.
+            if task.status is TaskStatus.PENDING and task.dup_match is not None:
+                row.set_dup_visual()
         # Re-apply visual selection if applicable.
         if self._selected_index is not None and 0 <= self._selected_index < len(self._task_rows):
             self._task_rows[self._selected_index].set_selected_visual(True)
@@ -1856,6 +1917,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                 on_status_change=self._on_send_status_change,
                 cancel_check=self._cancel_event.is_set,
                 retry_failed=retry_failed,
+                meeting_label=os.path.basename(self._history_folder),
             ):
                 pass
         except Exception as e:

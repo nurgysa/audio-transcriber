@@ -22,6 +22,7 @@ Public API:
     SentTask                 — value type for a previously-sent task
     normalize_title(str)     — shared title normalization (exposed for tests)
     FUZZY_HIGH / FUZZY_LOW   — score thresholds (config-overridable in PR-3)
+    resolve_thresholds(cfg)  — config thresholds with safe fallback
     build_sent_registry(...) — scan meeting history -> list[SentTask]
     find_candidates(...)     — fuzzy match within backend+container scope
     disambiguate_via_llm(...)— LLM resolves the borderline band
@@ -50,6 +51,48 @@ logger = logging.getLogger(__name__)
 # dedup_fuzzy_high / dedup_fuzzy_low.
 FUZZY_HIGH = 0.82
 FUZZY_LOW = 0.55
+
+
+def resolve_thresholds(
+    config: dict,
+    *,
+    default_high: float = FUZZY_HIGH,
+    default_low: float = FUZZY_LOW,
+) -> tuple[float, float]:
+    """Read ``dedup_fuzzy_high`` / ``dedup_fuzzy_low`` from a user config,
+    falling back to the module defaults on any unusable value.
+
+    This is the best-effort boundary for HAND-EDITED config. ``_run_dedup``
+    runs on the extraction worker *before* the success dispatch, and its
+    contract is that a dedup hiccup must never block showing the freshly-
+    extracted tasks. A bare ``float("oops")`` raises ``ValueError`` that
+    bubbles to the worker's ``except Exception`` and surfaces as a fake
+    "extraction failed". So this MUST NOT raise — it returns sane floats no
+    matter what the user typed into config.json.
+
+    Policy: **per-key** fallback — a garbage value for one key uses the
+    default for that key only, leaving a valid sibling untouched. A missing
+    key is not "bad" (it's just unset → default, no warning). Ordering
+    (low < high) is intentionally NOT validated here — out of scope for this
+    crash-safety fix.
+    """
+    resolved: list[float] = []
+    fell_back = False
+    for key, default in (
+        ("dedup_fuzzy_high", default_high),
+        ("dedup_fuzzy_low", default_low),
+    ):
+        try:
+            resolved.append(float(config.get(key, default)))
+        except (TypeError, ValueError):
+            # Hand-edited junk ("0.8x", null, []) — degrade to the default
+            # rather than let it sink an otherwise-successful extraction.
+            resolved.append(default)
+            fell_back = True
+    if fell_back:
+        logger.warning("invalid dedup_fuzzy_* in config; falling back to defaults")
+    return resolved[0], resolved[1]
+
 
 _PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
 _WS_RE = re.compile(r"\s+", re.UNICODE)
@@ -143,6 +186,7 @@ def find_candidates(
     *,
     backend: str,
     container_id: str,
+    low: float = FUZZY_LOW,
 ) -> list[tuple[SentTask, float]]:
     """Score ``new_task`` against same-scope registry entries, best first.
 
@@ -150,10 +194,10 @@ def find_candidates(
     ``container_id`` are eligible — a dedup comment must land on the same
     team/board the new task would otherwise be created in. Score =
     ``difflib.SequenceMatcher.ratio()`` on normalized titles, in [0, 1].
-    Returns ``(SentTask, score)`` pairs with ``score >= FUZZY_LOW``, sorted
-    by score descending (Python's stable sort keeps registry order on
-    ties). The caller distinguishes confident (``>= FUZZY_HIGH``) from
-    borderline (``FUZZY_LOW..FUZZY_HIGH``) and only LLM-checks the latter.
+    Returns ``(SentTask, score)`` pairs with ``score >= low`` (default
+    ``FUZZY_LOW``), sorted by score descending (stable sort keeps registry
+    order on ties). The caller distinguishes confident (``>= FUZZY_HIGH``)
+    from borderline (``low..FUZZY_HIGH``) and only LLM-checks the latter.
     """
     new_norm = normalize_title(new_task.title)
     if not new_norm:
@@ -163,7 +207,7 @@ def find_candidates(
         if sent.backend != backend or sent.container_id != container_id:
             continue
         score = SequenceMatcher(None, new_norm, normalize_title(sent.title)).ratio()
-        if score >= FUZZY_LOW:
+        if score >= low:
             scored.append((sent, score))
     scored.sort(key=lambda pair: pair[1], reverse=True)
     return scored
@@ -232,3 +276,37 @@ def disambiguate_via_llm(
     if not match_id:
         return None
     return by_ref.get(match_id)
+
+
+def select_match(
+    new_task: Task,
+    registry: list[SentTask],
+    *,
+    backend: str,
+    container_id: str,
+    openrouter_client,
+    model: str,
+    high: float = FUZZY_HIGH,
+    low: float = FUZZY_LOW,
+) -> SentTask | None:
+    """Full dedup decision for one new task: find -> threshold -> (LLM).
+
+    Returns the matched ``SentTask`` or ``None``. Top score ``>= high`` is a
+    confident duplicate (NO LLM call). A non-empty borderline band
+    (``low..high``) is handed to ``disambiguate_via_llm``. Empty candidate
+    set -> ``None`` without any LLM spend. ``high``/``low`` come from config
+    (``dedup_fuzzy_high``/``dedup_fuzzy_low``) with the module constants as
+    defaults. This is the single Tk-free entry point the dialog driver calls
+    per task — it carries the whole matching policy so the UI layer stays a
+    thin assigner.
+    """
+    candidates = find_candidates(
+        new_task, registry, backend=backend, container_id=container_id, low=low,
+    )
+    if not candidates:
+        return None
+    if candidates[0][1] >= high:
+        return candidates[0][0]
+    return disambiguate_via_llm(
+        new_task, [c for c, _ in candidates], openrouter_client, model,
+    )

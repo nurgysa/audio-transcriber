@@ -147,6 +147,13 @@ class _TaskRow(ctk.CTkFrame):
                 self._lbl_summary.configure(text=f"{base}  ·  {identifier}")
             else:
                 self._lbl_summary.configure(text=base)
+        elif status is TaskStatus.COMMENTED:
+            # Dedup: commented on an existing card instead of creating a dupe.
+            self._status_badge.configure(text="🔁", text_color=BLUE_DIM)
+            base = self._summary_text()
+            self._lbl_summary.configure(
+                text=f"{base}  ·  {identifier}" if identifier else base,
+            )
         elif status is TaskStatus.FAILED:
             code = error_code or "?"
             self._status_badge.configure(text=f"⚠{code}", text_color=RED)
@@ -154,6 +161,54 @@ class _TaskRow(ctk.CTkFrame):
         elif status is TaskStatus.SKIPPED:
             self._status_badge.configure(text="—", text_color=TEXT_SECONDARY)
             self._lbl_summary.configure(text=self._summary_text())
+
+    def set_dup_visual(self) -> None:
+        """Show the «возможный дубль» badge + comment/create toggle.
+
+        Only meaningful pre-send (status PENDING) when ``task.dup_match`` is
+        set. Builds a third row lazily; idempotent (safe to call once per
+        render). Picking «Создать новую» flips ``task.dup_action`` so the
+        sender creates a fresh card instead of commenting (false-match safety).
+        """
+        match = self._task.dup_match
+        if match is None:
+            return
+        if hasattr(self, "_dup_frame"):
+            self._dup_frame.grid()
+            return
+        self._dup_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self._dup_frame.grid(row=2, column=1, padx=4, pady=(0, 8), sticky="ew")
+
+        ident = match.identifier or "?"
+        self._dup_badge = ctk.CTkLabel(
+            self._dup_frame, text=f"🔁 возможный дубль → {ident}",
+            font=ctk.CTkFont(family=FONT, size=12, weight="bold"),
+            text_color=BLUE_DIM, anchor="w", cursor="hand2",
+        )
+        self._dup_badge.grid(row=0, column=0, sticky="w")
+        if match.url:
+            self._dup_badge.bind(
+                "<Button-1>", lambda _e, u=match.url: webbrowser.open(u),
+            )
+
+        self._dup_action_var = ctk.StringVar(
+            value="Закомментировать" if self._task.dup_action == "comment"
+            else "Создать новую",
+        )
+        self._dup_toggle = ctk.CTkSegmentedButton(
+            self._dup_frame,
+            values=["Закомментировать", "Создать новую"],
+            variable=self._dup_action_var,
+            command=self._handle_dup_action,
+            font=ctk.CTkFont(family=FONT, size=11),
+            selected_color=BLUE_DIM, selected_hover_color=BLUE_DIM,
+        )
+        self._dup_toggle.grid(row=1, column=0, pady=(4, 0), sticky="w")
+
+    def _handle_dup_action(self, value: str) -> None:
+        self._task.dup_action = (
+            "comment" if value == "Закомментировать" else "create"
+        )
 
     def _summary_text(self) -> str:
         glyph = _PRIORITY_GLYPHS.get(self._task.priority.name.lower(), "⚪")
