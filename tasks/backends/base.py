@@ -6,6 +6,8 @@ A `TaskBackend` exposes four operations:
     context(cid)       → dict                 (members + labels, or empty)
     create(cid, task)  → CreatedIssue         (POST/mutation per task)
 plus a `close()` method to release HTTP sessions.
+Backends that set ``supports_comments = True`` also implement ``add_comment()``,
+``list_existing()``, and ``comment_exists()`` (used by task-dedup).
 
 Container/CreatedIssue are intentionally minimal — backends differ in what
 metadata they track, but the dialog and sender only need the listed fields.

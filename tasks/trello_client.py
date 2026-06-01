@@ -19,7 +19,7 @@ Public API:
         board_context(lid)    → resolve list→board, returns {members, labels}
         create_card(...)      → POST /cards
         add_comment(cid, txt) → POST /cards/{id}/actions/comments
-        list_open_cards(lid)  → open cards in a list (dedup registry)
+        list_open_cards(lid)  → open cards on the list's BOARD (dedup registry)
         list_card_comments(cid) → comment texts on a card (dedup idempotency)
         close()               → release HTTP session
 """
