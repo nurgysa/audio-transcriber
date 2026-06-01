@@ -11,7 +11,7 @@ so the dialog's inline dropdown format needs no change (spec decision D4).
 """
 from __future__ import annotations
 
-from tasks.backends.base import Container, CreatedIssue
+from tasks.backends.base import Container, CreatedIssue, ExistingItem
 from tasks.schema import Priority, Task
 from tasks.trello_client import TrelloClient
 
@@ -83,6 +83,26 @@ class TrelloBackend:
 
     def add_comment(self, ref: str, body: str) -> None:
         self._client.add_comment(ref, body)
+
+    def list_existing(self, container_id: str) -> list[ExistingItem]:
+        out: list[ExistingItem] = []
+        for c in self._client.list_open_cards(container_id):
+            id_short = c.get("idShort")
+            if id_short is not None:
+                identifier = f"#{id_short}"
+            else:
+                identifier = c.get("shortLink") or "?"
+            out.append(ExistingItem(
+                title=c.get("name") or "",
+                ref=c.get("id") or "",
+                identifier=identifier,
+                url=c.get("url") or "",
+                description=c.get("desc") or "",
+            ))
+        return out
+
+    def comment_exists(self, ref: str, marker: str) -> bool:
+        return any(marker in t for t in self._client.list_card_comments(ref))
 
     def close(self) -> None:
         self._client.close()
