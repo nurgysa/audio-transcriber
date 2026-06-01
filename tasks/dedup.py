@@ -21,14 +21,18 @@ Pipeline (PR-3 caller shape):
 Public API:
     SentTask                 — value type for a previously-sent task
     normalize_title(str)     — shared title normalization (exposed for tests)
+    dedup_signature(str)     — stable 12-hex signature of a normalized title
+    dedup_marker(str)        — hidden HTML-comment marker embedding the signature
     FUZZY_HIGH / FUZZY_LOW   — score thresholds (config-overridable in PR-3)
     resolve_thresholds(cfg)  — config thresholds with safe fallback
     build_sent_registry(...) — scan meeting history -> list[SentTask]
+    build_board_registry(...)— build dedup registry from the live backend board
     find_candidates(...)     — fuzzy match within backend+container scope
     disambiguate_via_llm(...)— LLM resolves the borderline band
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -116,6 +120,7 @@ class SentTask:
     url: str
     meeting_name: str
     meeting_date: str
+    description: str = ""
 
 
 def normalize_title(title: str) -> str:
@@ -130,6 +135,17 @@ def normalize_title(title: str) -> str:
     lowered = title.lower()
     no_punct = _PUNCT_RE.sub(" ", lowered)
     return _WS_RE.sub(" ", no_punct).strip()
+
+
+def dedup_signature(title: str) -> str:
+    """Stable 12-hex signature of a title's normalized form. Used to mark
+    dedup comments so a re-run does not post a duplicate comment."""
+    return hashlib.sha1(normalize_title(title).encode("utf-8")).hexdigest()[:12]
+
+
+def dedup_marker(title: str) -> str:
+    """Hidden HTML-comment marker embedded in a dedup comment body."""
+    return f"<!-- audiotx-dedup:{dedup_signature(title)} -->"
 
 
 def build_sent_registry(
@@ -177,6 +193,34 @@ def build_sent_registry(
                 meeting_name=meeting_name,
                 meeting_date=meeting_date,
             ))
+    return registry
+
+
+def build_board_registry(backend, container_id: str) -> list[SentTask]:
+    """Build the dedup registry from the LIVE backend board.
+
+    Calls ``backend.list_existing(container_id)`` and maps each open item to
+    a ``SentTask`` scoped to this backend + container so the existing
+    ``find_candidates`` scope filter passes. Items missing a title or a
+    comment-addressable ``ref`` are skipped (cannot be matched/commented).
+    Backend errors propagate — the dialog driver swallows them best-effort.
+    """
+    name = getattr(backend, "name", "") or ""
+    registry: list[SentTask] = []
+    for item in backend.list_existing(container_id):
+        if not item.title or not item.ref:
+            continue
+        registry.append(SentTask(
+            title=item.title,
+            backend=name,
+            container_id=container_id,
+            ref=item.ref,
+            identifier=item.identifier,
+            url=item.url,
+            meeting_name="",
+            meeting_date="",
+            description=item.description,
+        ))
     return registry
 
 
@@ -233,7 +277,11 @@ def disambiguate_via_llm(
     if not candidates:
         return None
     by_ref = {c.ref: c for c in candidates}
-    cand_lines = "\n".join(f'- id={c.ref} | "{c.title}"' for c in candidates)
+    cand_lines = "\n".join(
+        f'- id={c.ref} | "{c.title}"'
+        + (f" | {c.description[:200]}" if c.description else "")
+        for c in candidates
+    )
     system = (
         "Ты дедупликатор задач. Дано НОВОЕ название задачи и список РАНЕЕ "
         "созданных задач с их id. Верни строго JSON "
@@ -243,8 +291,9 @@ def disambiguate_via_llm(
         "без пояснений."
     )
     user = (
-        f'НОВАЯ задача: "{new_task.title}"\n\n'
-        f"РАНЕЕ созданные:\n{cand_lines}\n\n"
+        f'НОВАЯ задача: "{new_task.title}"'
+        + (f"\nОписание: {new_task.description[:200]}" if new_task.description else "")
+        + f"\n\nРАНЕЕ созданные:\n{cand_lines}\n\n"
         "Верни только JSON-объект."
     )
     messages = [

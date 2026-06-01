@@ -6,6 +6,8 @@ A `TaskBackend` exposes four operations:
     context(cid)       → dict                 (members + labels, or empty)
     create(cid, task)  → CreatedIssue         (POST/mutation per task)
 plus a `close()` method to release HTTP sessions.
+Backends that set ``supports_comments = True`` also implement ``add_comment()``,
+``list_existing()``, and ``comment_exists()`` (used by task-dedup).
 
 Container/CreatedIssue are intentionally minimal — backends differ in what
 metadata they track, but the dialog and sender only need the listed fields.
@@ -54,6 +56,21 @@ class CreatedIssue:
     identifier: str
     url: str
     ref: str = ""
+
+
+@dataclass(frozen=True)
+class ExistingItem:
+    """An open item already on a backend board, for dedup matching.
+
+    `ref` is the comment-addressable id (Linear node UUID / Trello card id).
+    `identifier`/`url` are the human badge + link. `description` feeds the
+    LLM disambiguation of the borderline fuzzy band.
+    """
+    title: str
+    ref: str
+    identifier: str
+    url: str
+    description: str = ""
 
 
 class TaskBackend(Protocol):
@@ -110,6 +127,20 @@ class TaskBackend(Protocol):
         that opt out may raise NotImplementedError. Raises the backend's
         own error class (LinearError / TrelloError) on HTTP/network failure.
         """
+        ...
+
+    def list_existing(self, container_id: str) -> list[ExistingItem]:
+        """Open items on the container's board (active only — no
+        completed/canceled/archived). For task-dedup. Only called for
+        backends with supports_comments = True. Raises the backend's own
+        error class on HTTP/network failure (the dedup driver swallows it
+        best-effort)."""
+        ...
+
+    def comment_exists(self, ref: str, marker: str) -> bool:
+        """True if the item already has a comment containing `marker`
+        (idempotency for dedup re-runs). Raises the backend's error class
+        on HTTP/network failure."""
         ...
 
     def close(self) -> None:

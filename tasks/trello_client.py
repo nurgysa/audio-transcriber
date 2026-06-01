@@ -19,6 +19,8 @@ Public API:
         board_context(lid)    → resolve list→board, returns {members, labels}
         create_card(...)      → POST /cards
         add_comment(cid, txt) → POST /cards/{id}/actions/comments
+        list_open_cards(lid)  → open cards on the list's BOARD (dedup registry)
+        list_card_comments(cid) → comment texts on a card (dedup idempotency)
         close()               → release HTTP session
 """
 from __future__ import annotations
@@ -205,6 +207,41 @@ class TrelloClient:
                 labels.append({"id": lid, "name": name})
         return {"members": members, "labels": labels}
 
+    def list_open_cards(self, list_id: str) -> list[dict]:
+        """Open cards on the BOARD that owns ``list_id`` (board-level so a
+        duplicate moved to another list is still caught), for dedup.
+
+        Resolves list→board (same as board_context), then GET
+        /boards/{id}/cards?filter=open. Returns card dicts (id, name, desc,
+        url, idShort, shortLink). Raises TrelloError on failure. A full
+        board returns up to 1000 open cards; if exactly 1000 come back the
+        board may be truncated — logged as a WARNING (path-to-scale: switch
+        to server-side /search).
+        """
+        if not list_id:
+            raise TrelloError("list_id обязателен для list_open_cards")
+        lst = self._request("GET", f"/lists/{list_id}", params={"fields": "idBoard"})
+        board_id = lst.get("idBoard") if isinstance(lst, dict) else None
+        if not board_id:
+            raise TrelloError(
+                f"Trello: не удалось определить доску для списка {list_id}",
+            )
+        cards = self._request(
+            "GET", f"/boards/{board_id}/cards",
+            params={"filter": "open", "fields": "name,desc,url,idShort,shortLink"},
+        )
+        if not isinstance(cards, list):
+            raise TrelloError(
+                f"Trello /boards/{board_id}/cards вернул неожиданный формат: "
+                f"{type(cards).__name__}",
+            )
+        if len(cards) >= 1000:
+            logger.warning(
+                "Trello board %s returned %d open cards; dedup may be "
+                "truncated (consider server-side search)", board_id, len(cards),
+            )
+        return cards
+
     def create_card(
         self,
         *,
@@ -249,3 +286,18 @@ class TrelloClient:
         self._request(
             "POST", f"/cards/{card_id}/actions/comments", params={"text": text},
         )
+
+    def list_card_comments(self, card_id: str) -> list[str]:
+        """Comment texts on a card (dedup idempotency check).
+
+        GET /cards/{id}/actions?filter=commentCard → each action's
+        data.text. Raises TrelloError on HTTP/network failure.
+        """
+        if not card_id:
+            raise TrelloError("card_id обязателен для list_card_comments")
+        actions = self._request(
+            "GET", f"/cards/{card_id}/actions", params={"filter": "commentCard"},
+        )
+        if not isinstance(actions, list):
+            return []
+        return [(a.get("data") or {}).get("text") or "" for a in actions]
