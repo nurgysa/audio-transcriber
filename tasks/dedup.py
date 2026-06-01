@@ -29,6 +29,7 @@ Public API:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -116,6 +117,7 @@ class SentTask:
     url: str
     meeting_name: str
     meeting_date: str
+    description: str = ""
 
 
 def normalize_title(title: str) -> str:
@@ -130,6 +132,17 @@ def normalize_title(title: str) -> str:
     lowered = title.lower()
     no_punct = _PUNCT_RE.sub(" ", lowered)
     return _WS_RE.sub(" ", no_punct).strip()
+
+
+def dedup_signature(title: str) -> str:
+    """Stable 12-hex signature of a title's normalized form. Used to mark
+    dedup comments so a re-run does not post a duplicate comment."""
+    return hashlib.sha1(normalize_title(title).encode("utf-8")).hexdigest()[:12]
+
+
+def dedup_marker(title: str) -> str:
+    """Hidden HTML-comment marker embedded in a dedup comment body."""
+    return f"<!-- audiotx-dedup:{dedup_signature(title)} -->"
 
 
 def build_sent_registry(
