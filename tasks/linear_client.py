@@ -82,6 +82,12 @@ query TeamIssues($teamId: String!, $after: String) {
 }
 """
 
+_ISSUE_COMMENTS_QUERY = """
+query IssueComments($issueId: String!) {
+  issue(id: $issueId) { comments { nodes { body } } }
+}
+"""
+
 
 class LinearError(Exception):
     """All Linear HTTP/GraphQL failures bubble up as this."""
@@ -284,3 +290,12 @@ class LinearClient:
         result = data.get("commentCreate") or {}
         if not result.get("success"):
             raise LinearError(f"Linear отказался добавить комментарий: {result}")
+
+    def list_comments(self, issue_id: str) -> list[str]:
+        """Comment bodies on an issue (dedup idempotency check).
+
+        Raises LinearError on HTTP/network failure.
+        """
+        data = self._graphql(_ISSUE_COMMENTS_QUERY, {"issueId": issue_id})
+        nodes = ((data.get("issue") or {}).get("comments") or {}).get("nodes") or []
+        return [n.get("body") or "" for n in nodes]
