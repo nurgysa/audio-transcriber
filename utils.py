@@ -235,6 +235,18 @@ def get_meetings_dir() -> str:
     return _DEFAULT_MEETINGS_DIR
 
 
+def get_recordings_dir() -> str:
+    """Directory for raw recordings: ``<meetings_dir>/recordings/``.
+
+    Builds on get_meetings_dir() so it inherits the same 3-level fallback,
+    ~/%VAR% expansion, and writability checks — recordings always land as a
+    subfolder of whatever meetings dir is actually in use. The subfolder
+    itself is created by the write sites (recorder.start, move script), not
+    here, so this stays a pure resolver.
+    """
+    return os.path.join(get_meetings_dir(), "recordings")
+
+
 def _ensure_history_dir() -> str:
     """Backwards-compat shim — equivalent to get_meetings_dir()."""
     return get_meetings_dir()
