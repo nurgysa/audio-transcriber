@@ -256,11 +256,9 @@ import json
 import os
 from pathlib import Path
 
-from processing.model import QueueItem, StageStatus
-from utils import load_speakers
+from processing.model import QueueItem
 
 FILENAME = "queue.json"
-_SKIP_DIRS = {"recordings"}
 
 
 def _default_queue_path() -> Path:
@@ -359,7 +357,7 @@ def test_is_meeting_folder(tmp_path):
 Run: `pytest tests/test_processing_store.py -v`
 Expected: FAIL — collection `ImportError: cannot import name 'is_meeting_folder' from 'processing.store'`
 
-- [ ] **Step 3: Implement — append to `processing/store.py`**
+- [ ] **Step 3: Implement** — in `processing/store.py`, extend the model import to `from processing.model import QueueItem, StageStatus`, then append:
 
 ```python
 def stage_status_from_folder(folder: str) -> dict:
@@ -491,7 +489,7 @@ def test_build_view_active_without_folder_is_appended(tmp_path):
 Run: `pytest tests/test_processing_store.py -v`
 Expected: FAIL — collection `ImportError: cannot import name 'build_view' from 'processing.store'`
 
-- [ ] **Step 3: Implement — append to `processing/store.py`**
+- [ ] **Step 3: Implement** — in `processing/store.py` add `from utils import load_speakers` (first-party import group, after the `processing.model` import) and the module constant `_SKIP_DIRS = {"recordings"}` (just below `FILENAME`), then append:
 
 ```python
 def _row_from_folder(folder: str) -> QueueItem:
