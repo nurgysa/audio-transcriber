@@ -33,3 +33,30 @@ def test_save_config_creates_missing_parent_dir(monkeypatch, tmp_path):
     utils.save_config({"cloud_provider": "AssemblyAI"})
     assert target.is_file()
     assert json.loads(target.read_text(encoding="utf-8")) == {"cloud_provider": "AssemblyAI"}
+
+
+def test_load_config_seeds_template_when_frozen_and_missing(monkeypatch, tmp_path):
+    # Simulate a frozen bundle whose _MEIPASS holds the config.example.json template.
+    meipass = tmp_path / "bundle"
+    meipass.mkdir()
+    (meipass / "config.example.json").write_text(
+        json.dumps({"cloud_provider": "AssemblyAI", "cloud_api_keys": {}}),
+        encoding="utf-8",
+    )
+    target = tmp_path / "home" / ".audio-transcriber" / "config.json"   # absent
+    monkeypatch.setattr(utils.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(utils.sys, "_MEIPASS", str(meipass), raising=False)
+    monkeypatch.setattr(utils, "_CONFIG_PATH", str(target))
+
+    result = utils.load_config()
+
+    assert target.is_file()                       # seeded the template to ~
+    assert result["cloud_provider"] == "AssemblyAI"
+    assert result["cloud_api_keys"] == {}         # empty keys → first-run banner fires
+
+
+def test_load_config_does_not_seed_in_source_mode(monkeypatch, tmp_path):
+    target = tmp_path / "config.json"             # absent; not frozen
+    monkeypatch.setattr(utils, "_CONFIG_PATH", str(target))
+    assert utils.load_config() == {}              # unchanged dev behavior
+    assert not target.exists()                    # no seeding when unfrozen

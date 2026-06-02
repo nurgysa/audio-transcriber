@@ -127,6 +127,21 @@ def check_ffmpeg() -> bool:
     return get_ffmpeg_path() is not None
 
 
+def _seed_default_config(path: str) -> None:
+    """Frozen first-run: copy the bundled config.example.json template to
+    ``path`` when it is missing, so the live config is fully populated (empty
+    keys → first-run banner). No-op in source mode (no sys.frozen / _MEIPASS)."""
+    if not getattr(sys, "frozen", False):
+        return
+    template = os.path.join(getattr(sys, "_MEIPASS", ""), "config.example.json")
+    if not os.path.isfile(template):
+        return
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    shutil.copyfile(template, path)
+
+
 def load_config() -> dict:
     # utf-8-sig (not "utf-8") so a leading UTF-8 BOM is silently stripped on
     # read. Defensive: third-party tooling that touches config.json — Windows
@@ -135,6 +150,8 @@ def load_config() -> dict:
     # default "utf-8" codec then raises json.JSONDecodeError "Unexpected UTF-8
     # BOM" → silent app-start crash. Verified live on 2026-05-28 when a merge
     # helper script wrote config.json with BOM and the bundle failed to launch.
+    if not os.path.isfile(_CONFIG_PATH):
+        _seed_default_config(_CONFIG_PATH)  # frozen first-run: populate from template
     if os.path.isfile(_CONFIG_PATH):
         with open(_CONFIG_PATH, encoding="utf-8-sig") as f:
             return json.load(f)
