@@ -247,6 +247,23 @@ def get_recordings_dir() -> str:
     return os.path.join(get_meetings_dir(), "recordings")
 
 
+def should_delete_after_transcription(config: dict, audio_path: str | None) -> bool:
+    """True only when the user opted in AND ``audio_path`` lives inside the
+    recordings dir. The path-containment check (not a flag) guarantees a
+    user-loaded file from elsewhere is never deleted. Drive-mismatch / bad
+    paths fail safe to False (don't delete)."""
+    if not config.get("delete_recording_after_transcription", False):
+        return False
+    if not audio_path:
+        return False
+    try:
+        ap = os.path.normcase(os.path.abspath(audio_path))
+        rd = os.path.normcase(os.path.abspath(get_recordings_dir()))
+        return os.path.commonpath([ap, rd]) == rd
+    except (ValueError, OSError):
+        return False  # different drives (Windows) / malformed path → don't delete
+
+
 def _ensure_history_dir() -> str:
     """Backwards-compat shim — equivalent to get_meetings_dir()."""
     return get_meetings_dir()
