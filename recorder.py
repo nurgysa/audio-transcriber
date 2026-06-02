@@ -24,7 +24,9 @@ class Recorder:
     BLOCK_SIZE = 1024      # Frames per callback (~64ms at 16 kHz)
 
     def __init__(self, output_dir: str | None = None):
-        self._output_dir = output_dir or os.path.join(os.path.expanduser("~"), "Documents")
+        self._output_dir = output_dir or os.path.join(
+            os.path.expanduser("~"), "Documents", "AudioTranscriber", "recordings",
+        )
         self._stream: sd.InputStream | None = None
         self._file: sf.SoundFile | None = None
         self._lock = threading.Lock()
@@ -66,13 +68,21 @@ class Recorder:
             return self._pause_offset
         return self._pause_offset + (time.monotonic() - self._start_time)
 
-    def start(self) -> str:
-        """Start recording. Returns the output file path."""
+    def start(self, output_dir: str | None = None) -> str:
+        """Start recording. Returns the output file path.
+
+        ``output_dir`` overrides the instance default for this recording
+        (the caller passes the freshly-resolved recordings dir so a
+        mid-session meetings_dir change is honored). The dir is created if
+        missing.
+        """
         if self._is_recording:
             raise RuntimeError("Already recording")
 
+        target_dir = output_dir or self._output_dir
+        os.makedirs(target_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self._current_path = os.path.join(self._output_dir, f"recording_{timestamp}.wav")
+        self._current_path = os.path.join(target_dir, f"recording_{timestamp}.wav")
 
         self._file = sf.SoundFile(
             self._current_path,

@@ -20,6 +20,7 @@
   "trello_api_key": "",
   "trello_token": "",
   "trello_enabled": false,
+  "delete_recording_after_transcription": false,
   "dedup_enabled": true,
   "dedup_fuzzy_high": 0.82,
   "dedup_fuzzy_low": 0.55,
