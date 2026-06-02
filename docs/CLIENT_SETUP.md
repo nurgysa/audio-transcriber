@@ -169,8 +169,8 @@
 **Перед отгрузкой каждому:**
 
 - [ ] Bundle пересобран из свежего main (`.\scripts\build_exe.ps1`)
-- [ ] ZIP создан (`Compress-Archive dist/AudioTranscriber dist/AudioTranscriber-v0.1.0.zip`)
-- [ ] `_internal/config.json` свежий (build_exe.ps1 это делает автоматически из `config.example.json`)
+- [ ] ZIP создан **через Python `zipfile`** (НЕ `Compress-Archive` и НЕ .NET `ZipFile` — на PowerShell 5.1 обе пишут обратные слэши в имена записей, и архив не распакуется на macOS / 7-Zip / WinRAR у клиента). Паковать с forward-slash arcnames под верхней папкой `AudioTranscriber/`, затем проверить: записей с `\` ровно **0** и `testzip()` == OK. Итог: `dist\AudioTranscriber-v0.1.0.zip` (~112 MB, 1682 записи).
+- [ ] Бандл **template-only / без секретов** — в `dist\AudioTranscriber\` НЕТ `_internal\config.json` (только `config.example.json`-шаблон), нет gdrive-токена. Ключи клиента живут в `~/.audio-transcriber/config.json` (PR #92), а НЕ в бандле — поэтому раздача ключи не утекает. Перед отгрузкой прогнать поиск секретов по всему дереву бандла (искать значения своих реальных ключей; ожидаемо — 0 совпадений).
 - [ ] Smoke на чистой папке пройден (распаковал в `C:\Apps\AudioTranscriber-test\` → реальные ключи → транскрибировал 1 sample → protocol.md создался)
 - [ ] У клиента запланирован 15-мин Skype/Zoom (guided first-run сильно увеличивает retention)
 

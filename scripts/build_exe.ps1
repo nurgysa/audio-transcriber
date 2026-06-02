@@ -64,4 +64,6 @@ Write-Host ""
 Write-Host "Done. Smoke-test the bundle:" -ForegroundColor Green
 Write-Host "  .\$exePath" -ForegroundColor White
 Write-Host ""
-Write-Host "To ship: Compress-Archive -Path $bundleDir -DestinationPath dist/AudioTranscriber-<version>.zip" -ForegroundColor DarkGray
+Write-Host "To ship: python scripts\package_release.py --version <version>" -ForegroundColor DarkGray
+Write-Host "  (packs via Python zipfile with forward-slash names + verifies no-secrets/0-backslash/integrity;" -ForegroundColor DarkGray
+Write-Host "   do NOT use Compress-Archive — PS 5.1 writes backslash entry names that break extraction on macOS/7-Zip)" -ForegroundColor DarkGray
