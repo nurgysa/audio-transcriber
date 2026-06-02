@@ -6,7 +6,20 @@ from datetime import datetime
 
 SUPPORTED_EXTENSIONS = {".mp3", ".wav", ".m4a"}
 
-_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+def _default_config_path() -> str:
+    """Resolve config.json location.
+
+    Frozen (.exe): ``~/.audio-transcriber/config.json`` — OUTSIDE the bundle so
+    a build update never wipes the user's settings (same app-data home as
+    gdrive-token.json / directory.json). Source (dev): repo-root config.json
+    beside utils.py (unchanged).
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.expanduser("~"), ".audio-transcriber", "config.json")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+
+_CONFIG_PATH = _default_config_path()
 
 
 def validate_audio(path: str) -> bool:
