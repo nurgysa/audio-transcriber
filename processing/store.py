@@ -11,7 +11,7 @@ import json
 import os
 from pathlib import Path
 
-from processing.model import QueueItem
+from processing.model import QueueItem, StageStatus
 
 FILENAME = "queue.json"
 
@@ -40,3 +40,33 @@ def save_active(items: list[QueueItem], path: Path | str | None = None) -> None:
     tmp = p.parent / f".{p.name}.tmp"
     tmp.write_text(encoded, encoding="utf-8")
     os.replace(tmp, p)
+
+
+def stage_status_from_folder(folder: str) -> dict:
+    """Derive transcript/protocol/tasks StageStatus from which files exist."""
+
+    def has(name: str) -> bool:
+        return os.path.isfile(os.path.join(folder, name))
+
+    if has("transcript.md") or has("transcript.txt"):
+        transcript = StageStatus.DONE
+    else:
+        transcript = StageStatus.PENDING
+    protocol = StageStatus.DONE if has("protocol.md") else StageStatus.PENDING
+    if has("tasks.json"):
+        tasks = StageStatus.DONE
+    elif has("tasks_raw.json"):
+        tasks = StageStatus.AWAITING_REVIEW
+    else:
+        tasks = StageStatus.PENDING
+    return {"transcript": transcript, "protocol": protocol, "tasks": tasks}
+
+
+def is_meeting_folder(folder: str) -> bool:
+    """True if the folder holds meeting artifacts (so it is a meeting, not a
+    project container). create_history_entry writes transcript.md +
+    description.md together, so these markers are reliable for real meetings."""
+    for marker in ("transcript.md", "transcript.txt", "description.md", "segments.json"):
+        if os.path.isfile(os.path.join(folder, marker)):
+            return True
+    return False
