@@ -1,9 +1,10 @@
-"""Persistence for the processing queue.
+"""Persistence + disk-derived view for the processing queue.
 
 queue.json (active items only) lives at ~/.audio-transcriber/queue.json, beside
 config.json and directory.json. Atomic write (tmp + os.replace), mirroring
-directory/store.py. No Tk, no heavy deps; safe to import headlessly. (The
-disk-derived display view, build_view, is added in a later task.)
+directory/store.py. build_view derives the displayed meeting list fresh from the
+meetings dir (a two-level scan; project read from each meeting's speakers.json)
+and overlays the active items. No Tk, no heavy deps; safe to import headlessly.
 """
 from __future__ import annotations
 
