@@ -670,7 +670,7 @@ _ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 def project_dirname(project: Project) -> str:
     """Filesystem-safe folder name for a project. Falls back to a short id slice
     when the name sanitizes to empty (e.g. all-illegal characters)."""
-    cleaned = _ILLEGAL.sub("_", project.name).strip().strip(".")
+    cleaned = _ILLEGAL.sub("_", project.name).strip().strip("._")
     return cleaned or project.id[:8]
 
 
