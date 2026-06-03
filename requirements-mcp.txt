@@ -1,0 +1,7 @@
+# Optional extra — ONLY needed to run the MCP server (cli/mcp_server.py).
+# Kept out of the core requirements.txt so the GUI/CLI install stays unchanged
+# (CLAUDE.md invariant #3 — the core pins are load-bearing on Windows).
+#
+#   pip install -r requirements-mcp.txt
+#
+mcp==1.27.0
