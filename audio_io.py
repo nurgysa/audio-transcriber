@@ -293,8 +293,10 @@ def ffmpeg_trim(src: str, start_sec: float, end_sec: float, dst: str) -> None:
     only works when the cut points align with keyframes and the container
     supports it. If that fails, falls back to re-encoding.
 
-    Raises ``subprocess.CalledProcessError`` if both paths fail. ffmpeg
-    output is captured (not streamed to the terminal).
+    Raises ``subprocess.CalledProcessError`` if both paths fail. On a double
+    failure the partial ``dst`` (whatever the copy pass wrote) is removed
+    before re-raising, so a caller can never mistake a half-written file for a
+    successful trim. ffmpeg output is captured (not streamed to the terminal).
     """
     start_str = _ffmpeg_time(start_sec)
     end_str = _ffmpeg_time(end_sec)
@@ -305,14 +307,31 @@ def ffmpeg_trim(src: str, start_sec: float, end_sec: float, dst: str) -> None:
              "-c", "copy", dst],
             capture_output=True, check=True,
         )
+        return
     except subprocess.CalledProcessError:
-        # Fallback: re-encode. Slower, but handles non-keyframe-aligned cuts
-        # and codec-incompatible containers.
+        # Stream-copy failed (non-keyframe-aligned cut / incompatible
+        # container) — fall through to a re-encode pass.
+        pass
+
+    # Drop any partial output the copy pass may have written so the re-encode
+    # starts clean AND a second failure can't leave a corrupt dst the caller
+    # would treat as a valid trim.
+    try:
+        os.unlink(dst)
+    except OSError:
+        pass
+    try:
         subprocess.run(
             [get_ffmpeg_path(), "-y", "-i", src,
              "-ss", start_str, "-to", end_str, dst],
             capture_output=True, check=True,
         )
+    except subprocess.CalledProcessError:
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        raise
 
 
 def _ffmpeg_time(seconds: float) -> str:
