@@ -39,34 +39,54 @@ MANIFEST_VERSION = 1
 # fields that need re-entry.
 REDACTION_PLACEHOLDER = "<REDACTED>"
 
-# Top-level config keys whose values are stripped before upload. Per
-# spec line 117-121 plus cloud_api_keys (nested dict — values get
-# replaced one by one, structure preserved) and hf_token (HuggingFace
-# token used for pyannote diarization download — also a secret).
+# Top-level config keys whose values are ALWAYS stripped before upload,
+# regardless of their name. This explicit list is the floor; the
+# deny-by-default heuristic below (_looks_like_secret) is the ceiling
+# that catches anything name-shaped like a secret. Belt and suspenders:
+# the Trello keys shipped a cleartext-leak (PR #79) precisely because
+# this list was hand-maintained and drifted behind the config schema.
 REDACTED_KEYS = (
     "openrouter_api_key",
     "linear_api_key",
     "glide_api_key",
     "assemblyai_api_key",
+    "trello_api_key",
+    "trello_token",
     "hf_token",
 )
 
+# Case-insensitive substrings that mark a top-level string-valued config
+# key as a secret. Deny-by-default: a newly-added provider credential is
+# redacted automatically as long as its name follows the *_api_key /
+# *_token / *_secret / *_password convention the codebase already uses —
+# so a future key can't silently leak the way trello_* did.
+_SECRET_NAME_HINTS = ("key", "token", "secret", "password")
+
+
+def _looks_like_secret(key_name: str) -> bool:
+    """True if ``key_name`` contains any _SECRET_NAME_HINTS substring."""
+    lowered = key_name.lower()
+    return any(hint in lowered for hint in _SECRET_NAME_HINTS)
+
 
 def redact_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Return a deep copy of ``config`` with all known API keys
-    replaced by REDACTION_PLACEHOLDER. Input is never mutated.
+    """Return a deep copy of ``config`` with all secret values replaced
+    by REDACTION_PLACEHOLDER. Input is never mutated.
 
-    Two redaction shapes:
-      * Top-level string values (REDACTED_KEYS list)
-      * cloud_api_keys nested dict — keys (provider names) preserved,
-        values (the actual API keys) replaced
+    Redaction is deny-by-default for secrets:
+      * Any top-level STRING value whose key is in REDACTED_KEYS OR whose
+        name looks like a secret (_looks_like_secret) is replaced.
+      * cloud_api_keys nested dict — provider names (keys) preserved,
+        the actual API keys (values) replaced.
 
-    Keys absent from the input are silently skipped — no spurious
-    new placeholder entries appear in the output.
+    Non-string values (lists, bools, the cloud_api_keys dict itself) are
+    never touched by the string pass, so flags like ``trello_enabled``
+    and structures like ``hotwords`` survive intact. Keys absent from the
+    input are silently skipped — no spurious placeholder entries appear.
     """
     out = copy.deepcopy(config)
-    for key in REDACTED_KEYS:
-        if key in out:
+    for key, value in out.items():
+        if isinstance(value, str) and (key in REDACTED_KEYS or _looks_like_secret(key)):
             out[key] = REDACTION_PLACEHOLDER
     cloud_keys = out.get("cloud_api_keys")
     if isinstance(cloud_keys, dict):
