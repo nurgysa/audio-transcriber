@@ -1,5 +1,9 @@
 [tool.ruff]
 line-length = 100
+# Lint floor — keep code Python 3.10-compatible. Runtime + frozen build are
+# 3.12 (see README); bumping this to py312 forces UP042 (StrEnum) over the
+# deliberate (str, Enum) convention in processing/ + directory/ and UP017. Do
+# that as a separate, tested change — not in a docs pass.
 target-version = "py310"
 
 [tool.ruff.lint]

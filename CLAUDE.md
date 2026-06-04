@@ -74,7 +74,7 @@ preserves the rationale if anyone needs it.)
 Before any commit:
 
 ```bash
-pytest                       # must show green; baseline = 333 tests
+pytest                       # must show green; baseline ≈ 690 tests (regenerate: pytest --collect-only -q | tail -1)
                              # (was 462 pre-2026-05-28; -135 local-path
                              # tests removed alongside the cuda_utils /
                              # segmenter / speaker_aligner / prompt /
@@ -92,7 +92,7 @@ cached after first run (~1 min). Don't push expecting CI to catch your
 local regressions — run both locally first.
 
 `pytest.ini` is configured (`testpaths = tests`). `pyproject.toml` holds the
-ruff config (line-length=100, target=py310, rules E/W/F/I/B/UP).
+ruff config (line-length=100, target=py310 lint-floor, rules E/W/F/I/B/UP).
 
 ## Where things live
 
@@ -105,7 +105,7 @@ ruff config (line-length=100, target=py310, rules E/W/F/I/B/UP).
 | Audio recording | `recorder.py` |
 | Cloud provider ABC + registry | `providers/base.py` + `providers/__init__.py` |
 | Cloud transcription providers | `providers/{assemblyai,deepgram,gladia,speechmatics}.py` — Groq + OpenAI Whisper deleted in the 2026-05-28 rip-out (no native diarization, depended on the now-gone hybrid-with-local-pyannote path) |
-| Task extraction (LLM → Linear/Glide) | `tasks/` (`extractor`, `sender`, `schema`, `persistence`, `linear_client`, `glide_client`, `openrouter_client`, `errors`) + `tasks/backends/` (Protocol-based dispatch — `base.py`, `linear.py`, `glide.py`) |
+| Task extraction (LLM → Linear/Trello/Glide) | `tasks/` (`extractor`, `sender`, `schema`, `persistence`, `linear_client`, `trello_client`, `glide_client`, `openrouter_client`, `dedup`, `protocol_generator`, `errors`) + `tasks/backends/` (Protocol-based dispatch — `base.py`, `linear.py`, `trello.py`, `glide.py`) |
 | People/projects directory (Phase A) | `directory/` (`schema`, `store` — atomic JSON at `~/.audio-transcriber/directory.json`, `context` — prompt-context renderer). Grounds protocol + task prompts with real names/roles/project descriptions. Per-run speaker timestamps persisted via `utils.save_segments` → `<meeting>/segments.json`. |
 | Reference-document grounding (markitdown) | `tasks/doc_context.py` (`convert_documents` + `combine_context`) — converts user-attached PDF/DOCX/PPTX/XLSX to Markdown via Microsoft markitdown (document extras ONLY; never `[audio-transcription]` — invariant #2) and folds them into the same `context=` slot the directory grounding feeds. Wired into the Extract dialog's `_run_extraction`; `MarkItDown` is sentinel-lazy-loaded for testability. |
 | Audio editor | `audio_cutter.py` (silence-removal button removed in the 2026-05-28 rip-out; manual trim + preview + export retained) |
@@ -114,6 +114,9 @@ ruff config (line-length=100, target=py310, rules E/W/F/I/B/UP).
 | Google Drive auth (Phase 7.0) | `gdrive/auth.py` (`GDriveAuth` — OAuth desktop loopback via `InstalledAppFlow`; tokens at `~/.audio-transcriber/gdrive-token.json`) |
 | Google Drive API wrapper (Phase 7.1) | `gdrive/client.py` (`DriveClient` — thin wrapper over `googleapiclient.discovery.build`; find/create folder + upload file) |
 | Google Drive backup orchestrator (Phase 7.1) | `gdrive/backup.py` (`run_backup` — composes `redact_config` + `zip_history` + `build_manifest` + `DriveClient`) |
+| Shared audio I/O (ffmpeg) | `audio_io.py` (`ensure_wav`, `load_mono_float32`, `ffmpeg_trim`, `get_duration_s` — torch-free ffmpeg helpers shared by `transcriber`, `recorder`, `audio_cutter`) |
+| Headless CLI + MCP server | `cli/` (`core` — pipeline glue reused by both surfaces; `app` — argparse CLI; `mcp_server` — MCP stdio server for agent CLIs, see `AGENTS.md`) |
+| Meetings-by-project + processing queue | `processing/` (`model`, `store`, `layout` — meetings organized by project on disk + auto-pipeline foundation) |
 
 ## Branch + PR workflow
 
