@@ -273,7 +273,13 @@ class AssemblyAIProvider(TranscriptionProvider):
                     f"{r.text[:300]}"
                 )
 
-            payload = r.json()
+            try:
+                payload = r.json()
+            except ValueError as e:
+                raise ProviderError(
+                    f"AssemblyAI вернул не-JSON ответ при опросе "
+                    f"({r.status_code}): {r.text[:300]}"
+                ) from e
             status = payload.get("status")
 
             if status != last_status and on_status is not None:
