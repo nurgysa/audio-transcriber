@@ -169,7 +169,13 @@ class SpeechmaticsProvider(TranscriptionProvider):
                     f"{r.text[:300]}"
                 )
 
-            payload = r.json()
+            try:
+                payload = r.json()
+            except ValueError as e:
+                raise ProviderError(
+                    f"Speechmatics вернул не-JSON ответ при опросе "
+                    f"({r.status_code}): {r.text[:300]}"
+                ) from e
             status = (payload.get("job") or {}).get("status") \
                 or payload.get("status")
 
