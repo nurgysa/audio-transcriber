@@ -5,15 +5,15 @@ on:
   pull_request:
 
 jobs:
-  # Fast lint — independent of the heavy ML install. Surfaces ruff
-  # findings in ~30s instead of waiting for torch/pyannote (~5 min cold).
+  # Fast lint — independent of the dependency install. Surfaces ruff
+  # findings in ~30s.
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
       - run: pip install ruff>=0.5
       - run: ruff check .
 
@@ -24,17 +24,27 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
           cache: pip
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-mcp.txt
 
-      - name: Install dependencies
+      # Real ffmpeg so the audio_io filtergraph-parse tests actually run
+      # instead of skipping (they gate on shutil.which("ffmpeg") — see
+      # tests/test_audio_io.py). Catches Windows-vs-POSIX path bugs the
+      # mocked subprocess tests can't (the class that shipped via PR #56).
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt \
-            --extra-index-url https://download.pytorch.org/whl/cu126
+          pip install -r requirements-dev.txt -r requirements-mcp.txt
 
-      - name: Run pytest
-        run: pytest
+      # mcp is installed (via requirements-mcp.txt) so the MCP-server tests
+      # run instead of importorskip-skipping silently. --cov reports coverage
+      # in the log (no hard gate yet — establish the baseline first).
+      - name: Run pytest with coverage
+        run: pytest --cov=. --cov-report=term-missing

@@ -27,3 +27,17 @@ select = [
 # source of truth for the contract; readability inside the file matters
 # more than enforcing line length on string literals.
 "tasks/protocol_generator.py" = ["E501"]
+
+[tool.coverage.run]
+# Coverage focuses on logic modules. The UI (CTk widgets), the audio_cutter
+# Tk dialog, the entry point, and recorder (device I/O) are exercised by
+# manual smoke rather than unit tests — omitting them keeps the % honest.
+omit = [
+    "tests/*",
+    "ui/*",
+    "audio_cutter.py",
+    "recorder.py",
+    "app.py",
+    "scripts/*",
+    ".venv*/*",
+]
