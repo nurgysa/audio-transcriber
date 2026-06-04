@@ -63,6 +63,46 @@ def test_redact_config_handles_missing_keys_silently():
     assert redacted is not config, "redact_config must return a copy"
 
 
+def test_redact_config_redacts_trello_credentials():
+    """Regression (P0 leak): Trello API key + token are secrets stored
+    in config (added with the Trello backend in PR #79) and MUST be
+    redacted before config.json is uploaded to Google Drive. They were
+    absent from the original REDACTED_KEYS list, so every backup shipped
+    them in cleartext. This test pins that leak shut."""
+    config = {
+        "trello_api_key": "trello-real-key",
+        "trello_token": "trello-real-token",
+        "trello_enabled": True,  # non-secret flag — must survive intact
+    }
+    redacted = redact_config(config)
+    assert redacted["trello_api_key"] == REDACTION_PLACEHOLDER
+    assert redacted["trello_token"] == REDACTION_PLACEHOLDER
+    assert redacted["trello_enabled"] is True
+
+
+def test_redact_config_redacts_unknown_secret_named_keys():
+    """Deny-by-default: any top-level string key whose name looks like a
+    secret (contains key/token/secret/password, case-insensitive) is
+    redacted even if nobody added it to REDACTED_KEYS — so the next
+    provider credential can't silently leak the way Trello's did.
+    Non-secret keys are left untouched."""
+    config = {
+        "some_new_api_token": "future-secret",
+        "WEBHOOK_SECRET": "another-secret",
+        "user_password": "hunter2",
+        "gdrive_account_email": "user@example.com",  # not a secret
+        "meetings_dir": "C:/vault",                   # not a secret
+        "speaker_count": "Авто",                      # not a secret
+    }
+    redacted = redact_config(config)
+    assert redacted["some_new_api_token"] == REDACTION_PLACEHOLDER
+    assert redacted["WEBHOOK_SECRET"] == REDACTION_PLACEHOLDER
+    assert redacted["user_password"] == REDACTION_PLACEHOLDER
+    assert redacted["gdrive_account_email"] == "user@example.com"
+    assert redacted["meetings_dir"] == "C:/vault"
+    assert redacted["speaker_count"] == "Авто"
+
+
 # Audio file extensions excluded from the history.zip per spec
 # (text-only backup; audio is opt-in for Phase 7.4 which we haven't shipped).
 _AUDIO_EXTS = (".wav", ".mp3", ".m4a")
