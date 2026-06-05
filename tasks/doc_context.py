@@ -32,6 +32,14 @@ MarkItDown = None
 # and inflate cost. Tail-truncation with a visible marker is the safe default.
 MAX_DOC_CONTEXT_CHARS = 16000
 
+# Per-document INPUT-size ceiling. markitdown parses untrusted PDF/DOCX/PPTX/
+# XLSX (zip+XML via pdfminer/lxml/openpyxl) — a huge attachment OOMs the worker
+# (a DoS on the shared MCP server). Reject oversized files BEFORE convert(); the
+# character cap above is applied AFTER conversion, too late for a parse-time
+# blowup. NOTE: this does NOT stop a crafted small-file zip-bomb that expands at
+# parse time — that needs a wall-clock timeout / subprocess isolation (follow-up).
+MAX_DOC_BYTES = 50 * 1024 * 1024  # 50 MB
+
 
 def convert_documents(
     paths: list[str], max_chars: int = MAX_DOC_CONTEXT_CHARS
@@ -61,6 +69,21 @@ def convert_documents(
     blocks: list[str] = []
     for path in paths:
         name = os.path.basename(path)
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            # Can't stat (missing/unreadable) — DON'T skip here. Let md.convert
+            # below surface the real error via the existing per-file except, so
+            # behaviour for missing/bad files is unchanged (only the oversized
+            # case is a new skip).
+            size = 0
+        if size > MAX_DOC_BYTES:
+            logger.warning(
+                "doc skipped — %s is %.1f MB, over the %d MB input limit "
+                "(DoS / zip-bomb guard)",
+                name, size / (1024 * 1024), MAX_DOC_BYTES // (1024 * 1024),
+            )
+            continue
         try:
             text = (md.convert(path).text_content or "").strip()
         # Broad on purpose: markitdown's converters raise heterogeneous,
