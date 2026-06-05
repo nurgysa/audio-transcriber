@@ -22,7 +22,7 @@ import os
 import threading
 import tkinter as tk
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -43,6 +43,7 @@ from theme import (
 from ui.widgets import label, primary_button, tonal_button
 from utils import save_config
 
+from .cache_helpers import load_cached_containers
 from .constants import (
     _CACHE_KEY_BY_BACKEND,
     _CONTAINER_ACCUSATIVE_BY_BACKEND,
@@ -711,24 +712,13 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
     def _load_containers_async(self) -> None:
         """Use cache if fresh; else fetch from the selected backend in a worker."""
-        cache_key = self._backend_cache_key()
-        cache = self._config.get(cache_key) or {}
-        fetched_at = cache.get("fetched_at")
-        if fetched_at:
-            try:
-                age = datetime.now() - datetime.fromisoformat(fetched_at)
-            except ValueError:
-                age = _CONTAINER_CACHE_TTL + timedelta(seconds=1)
-            if age <= _CONTAINER_CACHE_TTL and cache.get("data"):
-                # Cache stores plain dicts; rebuild Container objects.
-                from tasks.backends.base import Container
-                self._containers = [
-                    Container(id=d["id"], name=d.get("name", "?"), key=d.get("key"))
-                    for d in cache["data"]
-                ]
-                self._populate_container_dropdown()
-                return
-
+        cached = load_cached_containers(
+            self._config, self._backend_cache_key(), _CONTAINER_CACHE_TTL,
+        )
+        if cached is not None:
+            self._containers = cached
+            self._populate_container_dropdown()
+            return
         self._fetch_containers_in_worker()
 
     def _refresh_containers(self) -> None:
