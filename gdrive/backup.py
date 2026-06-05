@@ -221,10 +221,9 @@ def run_backup(
         auth: `gdrive.auth.GDriveAuth` instance (signed in).
         config: in-memory app config dict — NOT mutated.
         history_dir: pathlib.Path or str — the local history/ folder.
-        work_dir: temp scratch dir for staging files. Created if
-            missing. Caller is responsible for cleanup (tempfile.
-            mkdtemp + shutil.rmtree on success, leave on failure for
-            debug).
+        work_dir: temp scratch dir for staging files. Created if missing and
+            ALWAYS removed before returning (success OR failure) — it holds the
+            history zip (all transcripts) + config and must not linger in %TEMP%.
         app_version: free-form version string written to manifest.
         on_status: optional callable(str) for progress updates. Called
             with Russian-language phase strings like
@@ -271,83 +270,93 @@ def run_backup(
                 # cosmetic issue, not a data-integrity one.
                 logger.exception("on_status callback failed (ignored)")
 
-    # 1. Validate auth — surfaces RefreshError early so we don't waste
-    #    time zipping if the user has revoked access in Google account
-    #    settings.
-    _say("Проверяю авторизацию Google Drive...")
-    auth.ensure_valid_credentials()
-    credentials = auth.get_credentials()
-
-    # 2. Stage history.zip
-    _say("Создаю архив истории...")
-    history_zip = work / "history.zip"
-    zip_history(history_path, history_zip)
-
-    # 3. Stage redacted config.json
-    _say("Готовлю конфиг (API ключи удалены)...")
-    redacted_cfg = redact_config(config)
-    config_path = work / "config.json"
-    config_path.write_text(json.dumps(redacted_cfg, indent=2, ensure_ascii=False))
-
-    # 4. Build + stage manifest.json
-    _say("Считаю контрольные суммы...")
-    snapshot_name = _iso_timestamp()
-    manifest = build_manifest(
-        files={
-            "config.json": config_path,
-            "history.zip": history_zip,
-        },
-        transcripts_count=_count_history_subdirs(history_path),
-        app_version=app_version,
-        host=socket.gethostname(),
-        created_at=snapshot_name,
-        audio_included=False,
-    )
-    manifest_path = work / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
-
-    # 5. Drive: find/create root + create snapshot folder
-    client = DriveClient(credentials)
-    _say("Подключаюсь к Google Drive...")
-    root_id = client.find_or_create_folder("audio-transcriber-backup")
-    _say(f"Создаю snapshot {snapshot_name}...")
-    snapshot_id = client.create_folder(snapshot_name, parent_id=root_id)
-
-    # 6. Upload three files in deterministic order. Manifest first so
-    #    a partial-failure observer can see what should have been
-    #    uploaded (Phase 7.2 restore reads manifest.json first).
-    uploaded = {}
-    # Imports local to keep module-top minimal.
-    from .client import JSON_MIME, ZIP_MIME
-
-    for arcname, local, mime in (
-        ("manifest.json", manifest_path, JSON_MIME),
-        ("config.json", config_path, JSON_MIME),
-        ("history.zip", history_zip, ZIP_MIME),
-    ):
-        _say(f"Загружаю {arcname}...")
-        file_id = client.upload_file(
-            local_path=local,
-            drive_name=arcname,
-            parent_id=snapshot_id,
-            mime_type=mime,
-        )
-        uploaded[arcname] = file_id
-
-    _say("✓ Backup готов")
-
-    # 7. Cleanup work dir on success (failure path leaves it for debug).
     try:
-        shutil.rmtree(work)
-    except OSError as e:
-        logger.warning("Could not clean up work dir %s: %s", work, e)
+        # 1. Validate auth — surfaces RefreshError early so we don't waste
+        #    time zipping if the user has revoked access in Google account
+        #    settings.
+        _say("Проверяю авторизацию Google Drive...")
+        auth.ensure_valid_credentials()
+        credentials = auth.get_credentials()
 
-    return {
-        "root_folder_id": root_id,
-        "snapshot_folder_id": snapshot_id,
-        "snapshot_name": snapshot_name,
-        "uploaded": uploaded,
-    }
+        # 2. Stage history.zip
+        _say("Создаю архив истории...")
+        history_zip = work / "history.zip"
+        zip_history(history_path, history_zip)
+
+        # 3. Stage redacted config.json (utf-8 — the redacted config carries
+        #    Russian UI strings; the platform-default codec mangles them on a
+        #    non-UTF-8 Windows locale).
+        _say("Готовлю конфиг (API ключи удалены)...")
+        redacted_cfg = redact_config(config)
+        config_path = work / "config.json"
+        config_path.write_text(
+            json.dumps(redacted_cfg, indent=2, ensure_ascii=False), encoding="utf-8",
+        )
+
+        # 4. Build + stage manifest.json
+        _say("Считаю контрольные суммы...")
+        snapshot_name = _iso_timestamp()
+        manifest = build_manifest(
+            files={
+                "config.json": config_path,
+                "history.zip": history_zip,
+            },
+            transcripts_count=_count_history_subdirs(history_path),
+            app_version=app_version,
+            host=socket.gethostname(),
+            created_at=snapshot_name,
+            audio_included=False,
+        )
+        manifest_path = work / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8",
+        )
+
+        # 5. Drive: find/create root + create snapshot folder
+        client = DriveClient(credentials)
+        _say("Подключаюсь к Google Drive...")
+        root_id = client.find_or_create_folder("audio-transcriber-backup")
+        _say(f"Создаю snapshot {snapshot_name}...")
+        snapshot_id = client.create_folder(snapshot_name, parent_id=root_id)
+
+        # 6. Upload three files in deterministic order. Manifest first so
+        #    a partial-failure observer can see what should have been
+        #    uploaded (Phase 7.2 restore reads manifest.json first).
+        uploaded = {}
+        # Imports local to keep module-top minimal.
+        from .client import JSON_MIME, ZIP_MIME
+
+        for arcname, local, mime in (
+            ("manifest.json", manifest_path, JSON_MIME),
+            ("config.json", config_path, JSON_MIME),
+            ("history.zip", history_zip, ZIP_MIME),
+        ):
+            _say(f"Загружаю {arcname}...")
+            file_id = client.upload_file(
+                local_path=local,
+                drive_name=arcname,
+                parent_id=snapshot_id,
+                mime_type=mime,
+            )
+            uploaded[arcname] = file_id
+
+        _say("✓ Backup готов")
+
+        return {
+            "root_folder_id": root_id,
+            "snapshot_folder_id": snapshot_id,
+            "snapshot_name": snapshot_name,
+            "uploaded": uploaded,
+        }
+    finally:
+        # ALWAYS clean the staging dir — it holds history.zip (all meeting
+        # transcripts) + the config + manifest. Leaving it on FAILURE
+        # accumulated transcripts/PII in %TEMP% across retries (audit P2).
+        # Best-effort: a cleanup failure must not mask the original error.
+        try:
+            shutil.rmtree(work)
+        except OSError as e:
+            logger.warning("Could not clean up work dir %s: %s", work, e)
 
 
 def _count_history_subdirs(history_dir) -> int:
