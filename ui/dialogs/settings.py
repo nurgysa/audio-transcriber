@@ -38,6 +38,7 @@ from theme import (
     TEXT_SECONDARY,
 )
 from ui.app.constants import LANGUAGES
+from ui.dialogs.settings_helpers import compute_banner_state
 from ui.widgets import (
     api_key_row,
     card,
@@ -256,48 +257,32 @@ class SettingsDialog(ctk.CTkToplevel):
     # ── First-run banner state machine + click handlers ────────────────
 
     def _update_banner(self, *_args) -> None:
-        """Show banner with the highest-priority actionable issue.
+        """Show the highest-priority actionable banner, or hide it.
 
-        Priority (top match wins):
-          1. Cloud STT key empty → red "Введите ключ" + action=stt
-          2. Mixed language + provider doesn't support it → red warning + action=lang
-          3. No issue → hide banner (silence-is-OK)
+        The decision tree lives in settings_helpers.compute_banner_state
+        (priority: empty STT key → mixed-language-unsupported-provider →
+        none); this wrapper applies the widget side (always-RED colour +
+        grid()/grid_remove()).
 
         Subscribed to `_cloud_api_key_var`, `_lang_var`, `_cloud_provider_var`
         via `trace_add("write", ...)`. Also called once at the end of
         `__init__` so a pre-loaded config that already has the issue
         surfaces the banner immediately.
         """
-        cloud_key = (self._parent._cloud_api_key_var.get() or "").strip()
-        if not cloud_key:
-            self._banner.configure(
-                text="⚠ Введите ключ провайдера STT (вкладка «Транскрипция») →",
-                text_color=RED,
-            )
-            self._banner_action = "stt"
-            self._banner.grid()
+        action, text = compute_banner_state(
+            cloud_key=self._parent._cloud_api_key_var.get(),
+            lang_label=self._parent._lang_var.get(),
+            provider_name=self._parent._cloud_provider_var.get(),
+            languages=LANGUAGES,
+            providers=PROVIDERS,
+        )
+        if action is None:
+            self._banner.grid_remove()
+            self._banner_action = None
             return
-
-        lang_label = self._parent._lang_var.get()
-        lang_code = LANGUAGES.get(lang_label)
-        if lang_code == "mixed":
-            provider_name = self._parent._cloud_provider_var.get()
-            provider_cls = PROVIDERS.get(provider_name)
-            if provider_cls is not None and not provider_cls.supports_mixed:
-                self._banner.configure(
-                    text=(
-                        f"⚠ {provider_name} не поддерживает «Смешанный "
-                        f"(KZ+RU+EN)». Выберите другой провайдер или язык →"
-                    ),
-                    text_color=RED,
-                )
-                self._banner_action = "lang"
-                self._banner.grid()
-                return
-
-        # No actionable issue → hide.
-        self._banner.grid_remove()
-        self._banner_action = None
+        self._banner.configure(text=text, text_color=RED)
+        self._banner_action = action
+        self._banner.grid()
 
     def _handle_banner_click(self) -> None:
         """Banner is clickable — dispatch by current action."""
