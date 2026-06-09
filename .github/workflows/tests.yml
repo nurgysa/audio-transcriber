@@ -18,7 +18,18 @@ jobs:
       - run: ruff check .
 
   pytest:
-    runs-on: ubuntu-latest
+    # Matrix over both target OSes (WS-6b). This is a Windows desktop app, so
+    # Linux CI is structurally blind to Windows-only breakage — path-separator
+    # bugs (the #56 ffmpeg-filtergraph class), the icacls owner-only ACL
+    # (#121), and tests that *skip* on Linux because sounddevice/PortAudio
+    # won't import there but DO run on Windows. fail-fast: false so a hiccup on
+    # one OS doesn't cancel the other leg. Note: windows-latest bills ~2x Linux
+    # minutes; if that's a concern, gate the windows leg to `on: push` to main.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -35,8 +46,13 @@ jobs:
       # instead of skipping (they gate on shutil.which("ffmpeg") — see
       # tests/test_audio_io.py). Catches Windows-vs-POSIX path bugs the
       # mocked subprocess tests can't (the class that shipped via PR #56).
-      - name: Install ffmpeg
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
 
       - name: Install Python dependencies
         run: |
