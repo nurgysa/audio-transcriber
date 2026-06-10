@@ -39,8 +39,6 @@ from ui.app.constants import LANGUAGES
 from ui.dialogs import settings_builder
 from ui.dialogs.settings_helpers import compute_banner_state
 from ui.widgets import (
-    label,
-    primary_button,
     tonal_button,
 )
 from utils import get_meetings_dir, save_config
@@ -158,8 +156,8 @@ class SettingsDialog(ctk.CTkToplevel):
         settings_builder.build_trello_section(self, scroll_integrations)
 
         # Tab 3 «Резервная копия» — independent housekeeping
-        self._build_gdrive_section(scroll_backup)
-        self._build_diagnostics_section(scroll_backup)
+        settings_builder.build_gdrive_section(self, scroll_backup)
+        settings_builder.build_diagnostics_section(self, scroll_backup)
 
         # Reactive banner: subscribe to the three vars whose values
         # determine the banner state. Tokens kept on self so destroy()
@@ -296,10 +294,6 @@ class SettingsDialog(ctk.CTkToplevel):
         if menu is not None:
             menu.focus_set()
 
-    def _section_card(self, parent, title: str, row: int) -> ctk.CTkFrame:
-        """Shim during the split — remaining sections move in Tasks 1.2/1.3."""
-        return settings_builder.section_card(self, parent, title, row)
-
     def _refresh_meetings_stats(self) -> None:
         """Compute «В этой папке: N митингов • X GB» and update the label."""
         from meetings_migration import count_meetings
@@ -389,69 +383,6 @@ class SettingsDialog(ctk.CTkToplevel):
             self._terms_summary.configure(text="Нет сохранённых терминов")
 
     # ── Google Drive section (Phase 7.0) ──────────────────────────────
-
-    def _build_gdrive_section(self, parent) -> None:
-        """Google Drive backup: sign-in/out + status badge.
-
-        Phase 7.0 surface only — no backup-now button (7.1), no
-        frequency dropdown (7.3), no audio opt-in (7.4). Adding those
-        widgets later just extends this method.
-
-        Threading: sign_in() blocks while the browser is open; we run
-        it in a daemon thread and route the result back to the Tk loop
-        via `self.after(0, ...)` so widget updates happen on the main
-        thread. Mirrors the _validate_openrouter pattern.
-        """
-        section = self._section_card(parent, "Google Drive", row=0)
-
-        # Status row — badge bound to the App's _gdrive_status_var.
-        label(section, "Статус").grid(
-            row=0, column=0, padx=(4, 8), pady=6, sticky="w",
-        )
-        self._gdrive_status_label = ctk.CTkLabel(
-            section,
-            textvariable=self._parent._gdrive_status_var,
-            anchor="w",
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(family=FONT, size=12),
-        )
-        self._gdrive_status_label.grid(
-            row=0, column=1, columnspan=2, padx=4, pady=6, sticky="ew",
-        )
-
-        # Action row — Войти + Выйти (one of them disabled at any time).
-        self._gdrive_signin_btn = primary_button(
-            section, text="Войти через Google",
-            command=self._handle_gdrive_signin, width=180,
-        )
-        self._gdrive_signin_btn.grid(
-            row=1, column=0, columnspan=2, padx=4, pady=6, sticky="w",
-        )
-
-        self._gdrive_signout_btn = tonal_button(
-            section, text="Выйти",
-            command=self._handle_gdrive_signout, width=100,
-        )
-        self._gdrive_signout_btn.grid(row=1, column=2, padx=(4, 4), pady=6, sticky="e")
-
-        # Backup-now row (Phase 7.1) — button + status label. Status is
-        # local (not bound to a parent Var) because backup status is a
-        # transient dialog-only concern; persistence of
-        # gdrive_last_backup happens on success via the mixin callback.
-        self._gdrive_backup_btn = tonal_button(
-            section, text="Сделать backup сейчас",
-            command=self._handle_gdrive_backup_now, width=200,
-        )
-        self._gdrive_backup_btn.grid(
-            row=2, column=0, columnspan=2, padx=4, pady=6, sticky="w",
-        )
-        self._gdrive_backup_status = label(section, "", anchor="w")
-        self._gdrive_backup_status.grid(
-            row=2, column=2, padx=(8, 4), pady=6, sticky="ew",
-        )
-
-        # Initial button enabled-state reflects current sign-in state.
-        self._refresh_gdrive_button_state()
 
     def _refresh_gdrive_button_state(self) -> None:
         """Войти is enabled iff not signed in; Выйти + Сделать backup
@@ -600,24 +531,6 @@ class SettingsDialog(ctk.CTkToplevel):
         self._refresh_gdrive_button_state()
 
     # ── Diagnostics: "Сохранить лог для отправки" (WS-3 / D4) ──────────
-
-    def _build_diagnostics_section(self, parent) -> None:
-        """Diagnostics export: bundle logs/ + a redacted config.json into a
-        zip the user can send to support. No telemetry backend (D4) — the
-        user picks where to save and ships it themselves."""
-        section = self._section_card(parent, "Диагностика", row=1)
-        label(section, "Логи").grid(
-            row=0, column=0, padx=(4, 8), pady=6, sticky="w",
-        )
-        self._send_log_btn = tonal_button(
-            section, text="Сохранить лог для отправки",
-            command=self._handle_send_log, width=240,
-        )
-        self._send_log_btn.grid(row=0, column=1, padx=4, pady=6, sticky="w")
-        self._send_log_status = label(section, "", anchor="w")
-        self._send_log_status.grid(
-            row=0, column=2, padx=(8, 4), pady=6, sticky="ew",
-        )
 
     def _handle_send_log(self) -> None:
         """Pick a destination, then build the logs+config zip in a worker.
