@@ -1,16 +1,34 @@
 # Audio Transcriber
 
+[![CI](https://github.com/nurgysa/audio-transcriber/actions/workflows/tests.yml/badge.svg)](https://github.com/nurgysa/audio-transcriber/actions/workflows/tests.yml)
+[![Release](https://img.shields.io/github/v/release/nurgysa/audio-transcriber)](https://github.com/nurgysa/audio-transcriber/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/nurgysa/audio-transcriber)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)](docs/CLIENT_SETUP.md)
+
 Десктоп-приложение для Windows: транскрипция аудио + диаризация спикеров
 через managed cloud-API, с извлечением задач и генерацией протокола встречи
 через LLM. UI на CustomTkinter. **GPU не нужен** — всё распознавание идёт
 по HTTPS к облачным провайдерам.
 
+> **EN:** Windows desktop app for cloud speech-to-text + speaker diarization
+> (AssemblyAI / Deepgram / Gladia / Speechmatics) with LLM task extraction to
+> Linear / Trello / Glide and meeting-protocol generation. Built for
+> Kazakh + Russian + English code-switching meetings. The UI and docs are
+> currently Russian-only. Grab the ready-to-run `.exe` from
+> [Releases](https://github.com/nurgysa/audio-transcriber/releases/latest).
+
 > **Cloud-only с 2026-05-28.** Локальный стек (faster-whisper / pyannote /
 > CUDA / torch) удалён из кодовой базы. Если вы искали GPU-версию — она в
 > истории git до коммита рип-аута, но больше не поддерживается.
 
-**Конечным пользователям** (запуск готового `.exe`, без Python): см.
-[`docs/CLIENT_SETUP.md`](docs/CLIENT_SETUP.md). Этот README — для разработки.
+## Скачать
+
+Готовое приложение (Windows 10/11, Python не нужен):
+**[Releases → AudioTranscriber-vX.Y.Z.zip](https://github.com/nurgysa/audio-transcriber/releases/latest)** (~147 МБ).
+Распакуйте в папку под вашим пользователем и запустите `AudioTranscriber.exe` —
+первый запуск по шагам: [`docs/CLIENT_SETUP.md`](docs/CLIENT_SETUP.md).
+
+Остальной README — для разработки из исходников.
 
 ## Возможности
 
