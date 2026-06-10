@@ -1,6 +1,7 @@
 from pathlib import Path
 
 SRC = Path(__file__).parent.parent / "ui/dialogs/extract_tasks/__init__.py"
+BUILDER = Path(__file__).parent.parent / "ui/dialogs/extract_tasks/builder.py"
 
 
 def test_dialog_loads_directory_store():
@@ -46,11 +47,12 @@ def test_run_extraction_persists_speakers_json():
 
 def test_dialog_builds_speaker_rows():
     src = SRC.read_text(encoding="utf-8")
+    bld = BUILDER.read_text(encoding="utf-8")
     assert "Кто говорит" in src
-    assert "_build_speaker_rows" in src
+    assert "build_speaker_rows" in bld
     assert "_speaker_row_vars" in src
-    assert "load_segments" in src
-    assert "_build_speaker_map" in src
+    assert "load_segments" in bld
+    assert "_build_speaker_map" in bld
 
 
 def test_dialog_speaker_autosync_to_participants():

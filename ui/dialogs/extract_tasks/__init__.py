@@ -29,8 +29,6 @@ import customtkinter as ctk
 
 from theme import (
     BG,
-    BLUE,
-    BLUE_DIM,
     BORDER,
     FONT,
     GREEN,
@@ -43,6 +41,7 @@ from theme import (
 from ui.widgets import label, primary_button, tonal_button
 from utils import save_config
 
+from . import builder
 from .cache_helpers import load_cached_containers
 from .constants import (
     _CACHE_KEY_BY_BACKEND,
@@ -53,6 +52,7 @@ from .constants import (
     _DISPLAY_TO_NAME,
     _EMPTY_CONTAINER_LABEL_BY_BACKEND,
     _NAME_TO_DISPLAY,
+    _NO_SELECTION,
     _RECENT_MODELS_KEY,
     _RECENT_MODELS_LIMIT,
     _REQUIRED_KEYS_BY_BACKEND,
@@ -60,11 +60,6 @@ from .constants import (
 )
 from .pricing import estimate_cost_hint, format_real_cost
 from .task_row import _TaskRow
-
-# CTkComboBox sentinel for the «Кто говорит» speaker rows — the dropdown's
-# "no person" option AND the guard value in _person_by_name. One definition
-# keeps those two uses from drifting apart on a future wording change.
-_NO_SELECTION = "— не выбрано —"
 
 
 def _backend_is_configured(name: str, config: dict) -> bool:
@@ -373,8 +368,8 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             docs_row, "Очистить", self._clear_attached_documents, width=90,
         ).grid(row=0, column=2, padx=(8, 0))
 
-        self._rebuild_context_participants(set())
-        self._build_speaker_rows()
+        builder.rebuild_context_participants(self, set())
+        builder.build_speaker_rows(self)
         self._restore_context_selection()
         if self._dir_load_error:
             # Defer to the event loop so the modal stacks on the fully-built,
@@ -477,36 +472,13 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             footer, text="Закрыть", command=self._on_close, width=110,
         ).grid(row=0, column=3, sticky="e")
 
-    def _rebuild_context_participants(self, checked_ids: set[str]) -> None:
-        """Render a checkbox per directory person, ticking checked_ids."""
-        for w in self._context_participants_frame.winfo_children():
-            w.destroy()
-        self._context_person_vars = {}
-        people = self._dir_store.people()
-        if not people:
-            label(
-                self._context_participants_frame,
-                "(справочник пуст — добавьте людей в «Справочники»)",
-            ).grid(row=0, column=0, padx=4, pady=2, sticky="w")
-            return
-        for i, p in enumerate(people):
-            var = ctk.BooleanVar(value=p.id in checked_ids)
-            self._context_person_vars[p.id] = var
-            text = p.full_name + (f" — {p.role}" if p.role else "")
-            ctk.CTkCheckBox(
-                self._context_participants_frame, text=text, variable=var,
-                fg_color=BLUE, hover_color=BLUE_DIM, text_color=TEXT_PRIMARY,
-                font=ctk.CTkFont(family=FONT, size=12),
-                checkbox_height=16, checkbox_width=16,
-            ).grid(row=i, column=0, padx=4, pady=1, sticky="w")
-
     def _on_context_project_changed(self, _choice=None) -> None:
         """Project change → pre-check that project's members."""
         project = self._selected_context_project()
         pid = project.id if project else None
         from directory.context import default_participants
         defaults = {p.id for p in default_participants(self._dir_store.people(), pid)}
-        self._rebuild_context_participants(defaults)
+        builder.rebuild_context_participants(self, defaults)
 
     def _on_attach_documents(self) -> None:
         """Pick reference documents to ground the LLM (markitdown → context).
@@ -557,56 +529,6 @@ class ExtractTasksDialog(ctk.CTkToplevel):
                     out.append(person)
         return out
 
-    def _build_speaker_rows(self) -> None:
-        """Render one «Спикер N → person» dropdown per diarized speaker label.
-
-        Reads <meeting>/segments.json and maps raw labels to the same
-        friendly «Спикер N» the transcript shows (via _build_speaker_map).
-        No segments / no diarization / empty directory → a muted hint and
-        no rows (pure manual mapping is impossible; the dialog still works).
-        """
-        # _build_speaker_map is transcript_format-internal but stable: it is the
-        # single source of the «Спикер N» labels the transcript shows and is
-        # already covered by test_transcript_format. Reuse keeps the panel's
-        # labels identical to the rendered transcript.
-        from transcript_format import _build_speaker_map
-        from utils import load_segments
-
-        for w in self._speaker_rows_frame.winfo_children():
-            w.destroy()
-        self._speaker_row_vars = {}
-        self._speaker_friendly = {}
-
-        label_map = _build_speaker_map(load_segments(self._history_folder))
-        people = self._dir_store.people()
-        if not label_map or not people:
-            hint = (
-                "(нет данных о спикерах)"
-                if not label_map
-                else "(справочник пуст — добавьте людей в «Справочники»)"
-            )
-            label(self._speaker_rows_frame, hint).grid(
-                row=0, column=0, padx=4, pady=2, sticky="w",
-            )
-            return
-
-        names = [_NO_SELECTION] + [p.full_name for p in people]
-        for i, (raw, friendly) in enumerate(label_map.items()):
-            self._speaker_friendly[raw] = friendly
-            var = ctk.StringVar(value=_NO_SELECTION)
-            self._speaker_row_vars[raw] = var
-            label(self._speaker_rows_frame, friendly).grid(
-                row=i, column=0, padx=(4, 8), pady=2, sticky="w",
-            )
-            ctk.CTkComboBox(
-                self._speaker_rows_frame, variable=var, values=names,
-                width=220, height=28, state="readonly",
-                font=ctk.CTkFont(family=FONT, size=12),
-                border_color=BORDER, button_color=BORDER,
-                fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
-                command=lambda _v, r=raw: self._on_speaker_bound(r),
-            ).grid(row=i, column=1, padx=0, pady=2, sticky="w")
-
     def _person_by_name(self, full_name: str):
         """First directory person whose full_name matches, else None.
 
@@ -655,7 +577,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             self._context_project_var.set(project.name)
         checked = set(data.get("participants") or [])
         if checked:
-            self._rebuild_context_participants(checked)
+            builder.rebuild_context_participants(self, checked)
         # PR-2: restore per-speaker bindings (raw label → person_id). Setting
         # the StringVar does not fire the combobox command, so no auto-sync
         # re-runs here — participants were already restored above.
