@@ -69,3 +69,8 @@ _PRIORITY_GLYPHS = {
     "high":   "🟠",
     "urgent": "🔴",
 }
+
+# CTkComboBox sentinel for the «Кто говорит» speaker rows — the dropdown's
+# "no person" option AND the guard value in _person_by_name. One definition
+# keeps those two uses from drifting apart on a future wording change.
+_NO_SELECTION = "— не выбрано —"

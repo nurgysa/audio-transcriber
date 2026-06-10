@@ -17,7 +17,7 @@ def _on_close_body() -> str:
     src = _DIALOG.read_text(encoding="utf-8")
     start = src.index("def _on_close(")
     # Slice up to the next method definition so assertions are scoped.
-    end = src.index("def _build_form(", start)
+    end = src.index("def _set_editor_buttons_state(", start)
     return src[start:end]
 
 
