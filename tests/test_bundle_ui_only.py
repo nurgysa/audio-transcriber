@@ -15,7 +15,8 @@ def test_voices_dialog_deleted():
 
 
 def test_settings_has_no_voice_library_section():
-    for rel in ["ui/dialogs/settings.py", "ui/dialogs/settings_builder.py"]:
+    for rel in ["ui/dialogs/settings.py", "ui/dialogs/settings_builder.py",
+                "ui/dialogs/extract_tasks/builder.py"]:
         src = Path(rel).read_text(encoding="utf-8")
         assert "Голоса" not in src, f"voice library button must be removed from {rel}"
         assert "_open_voices_dialog" not in src, (
@@ -26,7 +27,8 @@ def test_settings_has_no_voice_library_section():
 def test_settings_has_no_model_size_picker():
     import re
 
-    for rel in ["ui/dialogs/settings.py", "ui/dialogs/settings_builder.py"]:
+    for rel in ["ui/dialogs/settings.py", "ui/dialogs/settings_builder.py",
+                "ui/dialogs/extract_tasks/builder.py"]:
         src = Path(rel).read_text(encoding="utf-8")
         # Whisper model size dropdown is local-only — verify the runtime bindings
         # are gone (the docstring may still mention 'whisper-model' historically).
@@ -44,7 +46,8 @@ def test_settings_has_no_model_size_picker():
 
 
 def test_settings_has_no_device_picker():
-    for rel in ["ui/dialogs/settings.py", "ui/dialogs/settings_builder.py"]:
+    for rel in ["ui/dialogs/settings.py", "ui/dialogs/settings_builder.py",
+                "ui/dialogs/extract_tasks/builder.py"]:
         src = Path(rel).read_text(encoding="utf-8")
         # Both transcription + diarization device pickers are local-only
         assert "tr_device" not in src and "di_device" not in src, (
@@ -53,7 +56,8 @@ def test_settings_has_no_device_picker():
 
 
 def test_settings_has_no_hf_token_field():
-    for rel in ["ui/dialogs/settings.py", "ui/dialogs/settings_builder.py"]:
+    for rel in ["ui/dialogs/settings.py", "ui/dialogs/settings_builder.py",
+                "ui/dialogs/extract_tasks/builder.py"]:
         src = Path(rel).read_text(encoding="utf-8")
         lower = src.lower()
         assert "hf_token" not in lower and "huggingface" not in lower, (
@@ -114,6 +118,7 @@ def test_ui_has_no_noop_normalize_toggle():
     for rel in [
         "ui/dialogs/settings.py",
         "ui/dialogs/settings_builder.py",
+        "ui/dialogs/extract_tasks/builder.py",
         "ui/app/builder.py",
         "ui/app/settings_mixin.py",
         "ui/app/transcription_mixin.py",

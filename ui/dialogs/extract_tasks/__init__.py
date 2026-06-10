@@ -444,7 +444,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         )
         self._form_panel.grid(row=0, column=0, sticky="nsew")
         self._form_panel.grid_columnconfigure(0, weight=1)
-        self._build_form()
+        builder.build_form(self)
 
         # Disable buttons that need a selection until something is selected.
         self._set_editor_buttons_state(empty=True)
@@ -1161,117 +1161,6 @@ class ExtractTasksDialog(ctk.CTkToplevel):
             # Toplevel already destroyed (e.g. window closed via X) — no grab to release.
             pass
         self.destroy()
-
-    # ── Right-form builder ────────────────────────────────────────
-
-    def _build_form(self) -> None:
-        """Build the right-side form. Variables are owned by the form
-        and bound to the selected task via _bind_form_to / _form_to_task."""
-        f = self._form_panel
-
-        # StringVar/BooleanVar instances (re-bound on selection change).
-        self._var_title       = ctk.StringVar()
-        self._var_priority    = ctk.StringVar(value="none")
-        self._var_assignee    = ctk.StringVar(value="(нет)")
-        self._var_due_date    = ctk.StringVar()
-
-        # ── Autofill-from-text section (Phase 6.5, Söyle-friendly) ──
-        # User dictates a free-form description (via Söyle or by typing)
-        # into this textbox; clicking the button below runs the text
-        # through the LLM (extract_one_task) and overwrites the form
-        # fields. Sits at the TOP of the form so it's the first thing
-        # the user sees when they click + Добавить on a fresh task.
-        label(f, "Подсказка для AI (можно надиктовать через Söyle)").grid(
-            row=0, column=0, padx=12, pady=(12, 2), sticky="w",
-        )
-        self._textbox_autofill_hint = ctk.CTkTextbox(
-            f, wrap="word", height=64,
-            font=ctk.CTkFont(family=FONT, size=12),
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
-        )
-        self._textbox_autofill_hint.grid(
-            row=1, column=0, padx=12, pady=(0, 6), sticky="ew",
-        )
-        self._btn_autofill = tonal_button(
-            f, text="Заполнить из текста",
-            command=self._on_autofill_clicked, width=200,
-        )
-        self._btn_autofill.grid(row=2, column=0, padx=12, pady=(0, 14), sticky="w")
-
-        row = 3
-        label(f, "Заголовок").grid(row=row, column=0, padx=12, pady=(12, 2), sticky="w")
-        row += 1
-        self._entry_title = ctk.CTkEntry(
-            f, textvariable=self._var_title, height=36,
-            font=ctk.CTkFont(family=FONT, size=13),
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY, border_color=BORDER,
-        )
-        self._entry_title.grid(row=row, column=0, padx=12, pady=(0, 8), sticky="ew")
-        self._var_title.trace_add("write", lambda *_: self._on_form_changed())
-
-        row += 1
-        label(f, "Приоритет").grid(row=row, column=0, padx=12, pady=(0, 2), sticky="w")
-        row += 1
-        self._dropdown_priority = ctk.CTkOptionMenu(
-            f, variable=self._var_priority,
-            values=["none", "low", "medium", "high", "urgent"],
-            command=lambda _v: self._on_form_changed(),
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY, button_color=BORDER,
-            font=ctk.CTkFont(family=FONT, size=12),
-        )
-        self._dropdown_priority.grid(row=row, column=0, padx=12, pady=(0, 8), sticky="ew")
-
-        row += 1
-        label(f, "Исполнитель").grid(row=row, column=0, padx=12, pady=(0, 2), sticky="w")
-        row += 1
-        self._dropdown_assignee = ctk.CTkOptionMenu(
-            f, variable=self._var_assignee,
-            values=["(нет)"],
-            command=lambda _v: self._on_form_changed(),
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY, button_color=BORDER,
-            font=ctk.CTkFont(family=FONT, size=12),
-        )
-        self._dropdown_assignee.grid(row=row, column=0, padx=12, pady=(0, 8), sticky="ew")
-
-        row += 1
-        label(f, "Метки").grid(row=row, column=0, padx=12, pady=(0, 2), sticky="w")
-        row += 1
-        # For Phase 6.2, labels are displayed as a comma-joined string in an
-        # entry. Toggle UI (chips with X buttons) is post-6.4 polish.
-        self._var_labels_csv = ctk.StringVar()
-        self._entry_labels = ctk.CTkEntry(
-            f, textvariable=self._var_labels_csv, height=36,
-            font=ctk.CTkFont(family=FONT, size=12),
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY, border_color=BORDER,
-            placeholder_text="метка1, метка2 (только из team-labels)",
-        )
-        self._entry_labels.grid(row=row, column=0, padx=12, pady=(0, 8), sticky="ew")
-        self._var_labels_csv.trace_add("write", lambda *_: self._on_form_changed())
-
-        row += 1
-        label(f, "Дата (YYYY-MM-DD)").grid(row=row, column=0, padx=12, pady=(0, 2), sticky="w")
-        row += 1
-        self._entry_due = ctk.CTkEntry(
-            f, textvariable=self._var_due_date, height=36,
-            font=ctk.CTkFont(family=FONT, size=12),
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY, border_color=BORDER,
-            placeholder_text="напр. 2026-05-15",
-        )
-        self._entry_due.grid(row=row, column=0, padx=12, pady=(0, 8), sticky="ew")
-        self._var_due_date.trace_add("write", lambda *_: self._on_form_changed())
-
-        row += 1
-        label(f, "Описание").grid(row=row, column=0, padx=12, pady=(0, 2), sticky="w")
-        row += 1
-        f.grid_rowconfigure(row, weight=1)
-        self._textbox_description = ctk.CTkTextbox(
-            f, wrap="word", height=80,
-            font=ctk.CTkFont(family=FONT, size=12),
-            fg_color=INPUT_BG, text_color=TEXT_PRIMARY,
-        )
-        self._textbox_description.grid(row=row, column=0, padx=12, pady=(0, 12), sticky="nsew")
-        # CTkTextbox doesn't take a textvariable — we read it on save.
-        self._textbox_description.bind("<<Modified>>", self._on_description_modified)
 
     def _set_editor_buttons_state(self, *, empty: bool) -> None:
         """Toggle right-form widget enable + delete-button enable based on selection."""
