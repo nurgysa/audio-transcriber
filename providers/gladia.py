@@ -24,6 +24,7 @@ import time
 
 import requests
 
+from ._common import check_cancel, guess_content_type, require_key
 from .base import (
     ProviderError,
     TranscriptionOptions,
@@ -48,12 +49,7 @@ class GladiaProvider(TranscriptionProvider):
     supports_mixed = True   # Gladia supports KZ+RU+EN via code_switching flag
 
     def __init__(self, api_key: str):
-        if not api_key or not api_key.strip():
-            raise ProviderError(
-                "API-ключ Gladia не задан. Открой Настройки → Облако и "
-                "вставь ключ."
-            )
-        self._api_key = api_key.strip()
+        self._api_key = require_key(api_key, "Gladia")
         self._headers = {"x-gladia-key": self._api_key}
 
     def validate_key(self) -> dict:
@@ -90,13 +86,13 @@ class GladiaProvider(TranscriptionProvider):
         if not os.path.isfile(audio_path):
             raise ProviderError(f"Файл не найден: {audio_path}")
 
-        self._check_cancel(cancel_event)
+        check_cancel(cancel_event)
         if on_status:
             on_status("Загрузка аудио в Gladia...")
 
         audio_url = self._upload(audio_path, on_progress, cancel_event)
 
-        self._check_cancel(cancel_event)
+        check_cancel(cancel_event)
         if on_status:
             on_status("Запуск задачи...")
 
@@ -134,7 +130,7 @@ class GladiaProvider(TranscriptionProvider):
         with open(path, "rb") as f:
             files = {
                 "audio": (
-                    os.path.basename(path), f, _guess_content_type(path),
+                    os.path.basename(path), f, guess_content_type(path),
                 )
             }
             try:
@@ -231,7 +227,7 @@ class GladiaProvider(TranscriptionProvider):
         start = time.monotonic()
         last_status = ""
         while True:
-            self._check_cancel(cancel_event)
+            check_cancel(cancel_event)
             elapsed = time.monotonic() - start
             if elapsed > _MAX_WAIT_S:
                 raise ProviderError(
@@ -277,30 +273,12 @@ class GladiaProvider(TranscriptionProvider):
             # 0.25 s slice for cancel responsiveness.
             slept = 0.0
             while slept < _POLL_INTERVAL_S:
-                self._check_cancel(cancel_event)
+                check_cancel(cancel_event)
                 time.sleep(0.25)
                 slept += 0.25
 
-    @staticmethod
-    def _check_cancel(cancel_event) -> None:
-        if cancel_event is not None and cancel_event.is_set():
-            from transcriber import TranscriptionCancelled
-            raise TranscriptionCancelled()
-
 
 # ---------------------------- helpers ---------------------------------
-
-
-def _guess_content_type(path: str) -> str:
-    ext = os.path.splitext(path)[1].lower()
-    return {
-        ".mp3":  "audio/mpeg",
-        ".wav":  "audio/wav",
-        ".m4a":  "audio/mp4",
-        ".flac": "audio/flac",
-        ".ogg":  "audio/ogg",
-        ".webm": "audio/webm",
-    }.get(ext, "application/octet-stream")
 
 
 def _extract_language(payload: dict) -> str | None:

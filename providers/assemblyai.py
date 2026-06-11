@@ -25,6 +25,7 @@ import time
 
 import requests
 
+from ._common import check_cancel, require_key
 from .base import (
     ProviderError,
     TranscriptionOptions,
@@ -56,12 +57,7 @@ class AssemblyAIProvider(TranscriptionProvider):
     supports_mixed = True  # Universal-2 covers 99 languages including Kazakh ('kk')
 
     def __init__(self, api_key: str):
-        if not api_key or not api_key.strip():
-            raise ProviderError(
-                "API-ключ AssemblyAI не задан. Открой Настройки → Облако и "
-                "вставь ключ."
-            )
-        self._api_key = api_key.strip()
+        self._api_key = require_key(api_key, "AssemblyAI")
         self._headers = {"authorization": self._api_key}
 
     def validate_key(self) -> dict:
@@ -98,7 +94,7 @@ class AssemblyAIProvider(TranscriptionProvider):
         if not os.path.isfile(audio_path):
             raise ProviderError(f"Файл не найден: {audio_path}")
 
-        self._check_cancel(cancel_event)
+        check_cancel(cancel_event)
         if on_status:
             on_status("Загрузка аудио в AssemblyAI...")
 
@@ -106,7 +102,7 @@ class AssemblyAIProvider(TranscriptionProvider):
             audio_path, on_progress=on_progress, cancel_event=cancel_event,
         )
 
-        self._check_cancel(cancel_event)
+        check_cancel(cancel_event)
         if on_status:
             on_status("Запуск задачи...")
 
@@ -148,7 +144,7 @@ class AssemblyAIProvider(TranscriptionProvider):
             nonlocal sent
             with open(audio_path, "rb") as f:
                 while True:
-                    self._check_cancel(cancel_event)
+                    check_cancel(cancel_event)
                     chunk = f.read(_UPLOAD_CHUNK)
                     if not chunk:
                         return
@@ -272,7 +268,7 @@ class AssemblyAIProvider(TranscriptionProvider):
         start = time.monotonic()
         last_status = ""
         while True:
-            self._check_cancel(cancel_event)
+            check_cancel(cancel_event)
             elapsed = time.monotonic() - start
             if elapsed > _MAX_WAIT_S:
                 raise ProviderError(
@@ -324,7 +320,7 @@ class AssemblyAIProvider(TranscriptionProvider):
             # 0.25 s slice for cancel responsiveness (vs. one big sleep).
             slept = 0.0
             while slept < _POLL_INTERVAL_S:
-                self._check_cancel(cancel_event)
+                check_cancel(cancel_event)
                 time.sleep(0.25)
                 slept += 0.25
 
@@ -347,15 +343,6 @@ class AssemblyAIProvider(TranscriptionProvider):
                 "AssemblyAI cancel-DELETE failed for %s (job may stay billable): %s",
                 transcript_id, e,
             )
-
-    @staticmethod
-    def _check_cancel(cancel_event) -> None:
-        # Imported lazily to keep the provider package free of any direct
-        # dependency on the transcriber module — the exception class is
-        # the only piece of contract we need here.
-        if cancel_event is not None and cancel_event.is_set():
-            from transcriber import TranscriptionCancelled
-            raise TranscriptionCancelled()
 
 
 # ----------------------- response → segments map -----------------------

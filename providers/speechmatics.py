@@ -22,6 +22,7 @@ import time
 
 import requests
 
+from ._common import check_cancel, guess_content_type, require_key
 from .base import (
     ProviderError,
     TranscriptionOptions,
@@ -42,12 +43,7 @@ class SpeechmaticsProvider(TranscriptionProvider):
     supports_mixed = True  # KZ in multilingual model + language_identification_config
 
     def __init__(self, api_key: str):
-        if not api_key or not api_key.strip():
-            raise ProviderError(
-                "API-ключ Speechmatics не задан. Открой Настройки → "
-                "Облако и вставь ключ."
-            )
-        self._api_key = api_key.strip()
+        self._api_key = require_key(api_key, "Speechmatics")
         self._headers = {"Authorization": f"Bearer {self._api_key}"}
 
     def validate_key(self) -> dict:
@@ -84,7 +80,7 @@ class SpeechmaticsProvider(TranscriptionProvider):
         if not os.path.isfile(audio_path):
             raise ProviderError(f"Файл не найден: {audio_path}")
 
-        self._check_cancel(cancel_event)
+        check_cancel(cancel_event)
         if on_status:
             on_status("Загрузка аудио в Speechmatics...")
         if on_progress:
@@ -126,7 +122,7 @@ class SpeechmaticsProvider(TranscriptionProvider):
         with open(path, "rb") as f:
             files = {
                 "data_file": (
-                    os.path.basename(path), f, _guess_content_type(path),
+                    os.path.basename(path), f, guess_content_type(path),
                 ),
                 "config": (None, json.dumps(config), "application/json"),
             }
@@ -165,7 +161,7 @@ class SpeechmaticsProvider(TranscriptionProvider):
         start = time.monotonic()
         last_status = ""
         while True:
-            self._check_cancel(cancel_event)
+            check_cancel(cancel_event)
             elapsed = time.monotonic() - start
             if elapsed > _MAX_WAIT_S:
                 raise ProviderError(
@@ -217,7 +213,7 @@ class SpeechmaticsProvider(TranscriptionProvider):
 
             slept = 0.0
             while slept < _POLL_INTERVAL_S:
-                self._check_cancel(cancel_event)
+                check_cancel(cancel_event)
                 time.sleep(0.25)
                 slept += 0.25
 
@@ -259,26 +255,8 @@ class SpeechmaticsProvider(TranscriptionProvider):
         except Exception:
             pass
 
-    @staticmethod
-    def _check_cancel(cancel_event) -> None:
-        if cancel_event is not None and cancel_event.is_set():
-            from transcriber import TranscriptionCancelled
-            raise TranscriptionCancelled()
-
 
 # ---------------------------- helpers ---------------------------------
-
-
-def _guess_content_type(path: str) -> str:
-    ext = os.path.splitext(path)[1].lower()
-    return {
-        ".mp3":  "audio/mpeg",
-        ".wav":  "audio/wav",
-        ".m4a":  "audio/mp4",
-        ".flac": "audio/flac",
-        ".ogg":  "audio/ogg",
-        ".webm": "audio/webm",
-    }.get(ext, "application/octet-stream")
 
 
 def _build_config(options: TranscriptionOptions) -> dict:

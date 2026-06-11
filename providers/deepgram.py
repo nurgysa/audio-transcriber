@@ -25,6 +25,7 @@ import os
 
 import requests
 
+from ._common import check_cancel, guess_content_type, require_key
 from .base import (
     ProviderError,
     TranscriptionOptions,
@@ -50,12 +51,7 @@ class DeepgramProvider(TranscriptionProvider):
     supports_mixed: bool = False
 
     def __init__(self, api_key: str):
-        if not api_key or not api_key.strip():
-            raise ProviderError(
-                "API-ключ Deepgram не задан. Открой Настройки → Облако и "
-                "вставь ключ."
-            )
-        self._api_key = api_key.strip()
+        self._api_key = require_key(api_key, "Deepgram")
 
     def validate_key(self) -> dict:
         """Cheap auth check: GET /v1/auth/token — 2xx means the key is live."""
@@ -102,14 +98,14 @@ class DeepgramProvider(TranscriptionProvider):
         if not os.path.isfile(audio_path):
             raise ProviderError(f"Файл не найден: {audio_path}")
 
-        self._check_cancel(cancel_event)
+        check_cancel(cancel_event)
         if on_status:
             on_status("Загрузка аудио в Deepgram...")
 
         params = _build_params(options)
         headers = {
             "Authorization": f"Token {self._api_key}",
-            "Content-Type": _guess_content_type(audio_path),
+            "Content-Type": guess_content_type(audio_path),
         }
 
         size = os.path.getsize(audio_path)
@@ -118,7 +114,7 @@ class DeepgramProvider(TranscriptionProvider):
         def _gen():
             with open(audio_path, "rb") as f:
                 while True:
-                    self._check_cancel(cancel_event)
+                    check_cancel(cancel_event)
                     chunk = f.read(_UPLOAD_CHUNK)
                     if not chunk:
                         return
@@ -172,27 +168,8 @@ class DeepgramProvider(TranscriptionProvider):
             raw=payload,
         )
 
-    @staticmethod
-    def _check_cancel(cancel_event) -> None:
-        if cancel_event is not None and cancel_event.is_set():
-            from transcriber import TranscriptionCancelled
-            raise TranscriptionCancelled()
-
 
 # ---------------------------- helpers ---------------------------------
-
-
-def _guess_content_type(path: str) -> str:
-    """Map the source extension to an audio MIME type Deepgram accepts."""
-    ext = os.path.splitext(path)[1].lower()
-    return {
-        ".mp3":  "audio/mpeg",
-        ".wav":  "audio/wav",
-        ".m4a":  "audio/mp4",
-        ".flac": "audio/flac",
-        ".ogg":  "audio/ogg",
-        ".webm": "audio/webm",
-    }.get(ext, "application/octet-stream")
 
 
 def _build_params(options: TranscriptionOptions) -> list[tuple[str, str]]:
