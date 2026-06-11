@@ -8,7 +8,9 @@ Handlers, workers (extraction/dedup/containers), and state stay on
 ``ExtractTasksDialog``.
 
 Import discipline (cycle guard): may import theme, ui.widgets and the
-sibling ``.constants`` / ``.task_row`` — never the package ``__init__``.
+sibling ``.constants`` — never the package ``__init__``. Heavier deps
+(directory.store, transcript_format, utils.load_segments) stay lazy
+inside the functions that need them.
 """
 
 from __future__ import annotations

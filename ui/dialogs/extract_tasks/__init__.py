@@ -88,7 +88,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         self._config = config
 
         # Phase A UI part 2: directory for meeting-context grounding. The store
-        # is constructed here but loaded in _build_ui (after the window geometry
+        # is constructed here but loaded in builder.build_ui (after the window geometry
         # is set), and any corrupt-file warning is deferred via after() — so the
         # modal never stacks on a half-built, unrealized window. A load failure
         # degrades to an empty directory; it never crashes the dialog.
@@ -349,7 +349,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
         """Map dropdown display value → internal backend name.
 
         Returns "linear" / "glide" / "trello". Defaults to first enabled if
-        the UI hasn't been built yet (called from _build_ui pre-init)."""
+        the UI hasn't been built yet (called from builder.build_ui pre-init)."""
         var = getattr(self, "_backend_var", None)
         display = var.get() if var is not None else None
         name = _DISPLAY_TO_NAME.get(display)
@@ -1397,7 +1397,7 @@ class ExtractTasksDialog(ctk.CTkToplevel):
 
     def _refresh_send_button_label(self) -> None:
         """Update Send button text+state from pending+selected count, and
-        Retry button state from failed count. Safe to call before _build_ui
+        Retry button state from failed count. Safe to call before builder.build_ui
         completes — silently skips if buttons aren't built yet."""
         from tasks.schema import TaskStatus
         btn_send = getattr(self, "_btn_send", None)
