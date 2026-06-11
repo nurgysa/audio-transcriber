@@ -104,6 +104,38 @@ def validate_via_get(url: str, *, headers: dict, provider: str,
     return {}
 
 
+def request(method: str, url: str, *, provider: str, action_ru: str,
+            action_en: str, timeout: float, **kwargs) -> requests.Response:
+    """One HTTP round-trip with the shared error idiom.
+
+    ``action_ru`` is prepositional-case Russian for the network-failure
+    message («загрузке аудио» → «Сеть не отвечает при загрузке аудио»);
+    ``action_en`` labels HTTP failures («upload» → «X upload failed (N)»).
+
+    Dispatches via ``getattr(requests, method)`` — NOT requests.request —
+    so tests can keep patching per-verb mocks
+    (``providers._common.requests.post`` / ``.get``) independently.
+    """
+    func = getattr(requests, method)
+    try:
+        r = func(url, timeout=timeout, **kwargs)
+    except requests.RequestException as e:
+        raise ProviderError(f"Сеть не отвечает при {action_ru}: {e}") from e
+    if r.status_code in (401, 403):
+        # "(401)" stays hardcoded — matches the #133 validate_key precedent
+        # and the existing test match patterns.
+        raise ProviderError(
+            f"{provider} отклонил ключ (401). Проверь API-ключ в "
+            "Настройках → Облако."
+        )
+    if not r.ok:
+        raise ProviderError(
+            f"{provider} {action_en} failed ({r.status_code}): "
+            f"{r.text[:300]}"
+        )
+    return r
+
+
 def file_stream(path: str, *, cancel_event, on_progress,
                 band: float = 70.0, chunk_size: int = UPLOAD_CHUNK):
     """Chunked file reader for streaming upload bodies.

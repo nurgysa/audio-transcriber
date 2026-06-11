@@ -18,6 +18,7 @@ from providers._common import (
     check_cancel,
     file_stream,
     guess_content_type,
+    request,
     require_key,
     validate_via_get,
 )
@@ -214,3 +215,54 @@ def test_file_stream_empty_file_yields_nothing_no_progress(tmp_path):
     )
     assert chunks == []
     assert calls == []  # size == 0 guard: no div-by-zero, no bogus 0%
+
+
+# ── request ───────────────────────────────────────────────────────────
+
+
+def test_request_dispatches_via_named_verb_for_patchability():
+    r = MagicMock(ok=True, status_code=200)
+    with patch("providers._common.requests.post", return_value=r) as p:
+        out = request(
+            "post", "https://api.example/u", provider="X",
+            action_ru="загрузке аудио", action_en="upload",
+            timeout=30, json={"a": 1},
+        )
+    assert out is r
+    assert p.call_args.kwargs["timeout"] == 30
+    assert p.call_args.kwargs["json"] == {"a": 1}
+
+
+def test_request_network_error_uses_action_ru():
+    with patch(
+        "providers._common.requests.get",
+        side_effect=requests.RequestException("boom"),
+    ):
+        with pytest.raises(
+            ProviderError, match="Сеть не отвечает при опросе"
+        ):
+            request("get", "u", provider="X", action_ru="опросе",
+                    action_en="poll", timeout=30)
+
+
+@pytest.mark.parametrize("code", [401, 403])
+def test_request_key_rejection_is_russian(code):
+    r = MagicMock(ok=False, status_code=code, text="no")
+    with patch("providers._common.requests.get", return_value=r):
+        with pytest.raises(
+            ProviderError, match=r"X отклонил ключ \(401\)"
+        ):
+            request("get", "u", provider="X", action_ru="опросе",
+                    action_en="poll", timeout=30)
+
+
+def test_request_non_ok_uses_action_en_and_truncates():
+    r = MagicMock(ok=False, status_code=500, text="z" * 1000)
+    with patch("providers._common.requests.post", return_value=r):
+        with pytest.raises(
+            ProviderError, match=r"X upload failed \(500\)"
+        ) as ei:
+            request("post", "u", provider="X", action_ru="загрузке аудио",
+                    action_en="upload", timeout=30)
+    assert "z" * 300 in str(ei.value)
+    assert "z" * 301 not in str(ei.value)
