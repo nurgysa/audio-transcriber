@@ -18,6 +18,7 @@ from providers._common import (
     check_cancel,
     guess_content_type,
     require_key,
+    validate_via_get,
 )
 from providers.base import ProviderError
 
@@ -109,3 +110,48 @@ def test_cancel_remote_unexpected_exception_propagates():
     ):
         with pytest.raises(ValueError):
             cancel_remote("https://api.example/jobs/42", {}, provider="X")
+
+
+# ── validate_via_get ──────────────────────────────────────────────────
+
+
+def test_validate_via_get_2xx_returns_empty_dict():
+    r = MagicMock(status_code=200, text="{}")
+    with patch("providers._common.requests.get", return_value=r) as g:
+        out = validate_via_get(
+            "https://api.example/check", headers={"a": "b"}, provider="X",
+            params={"limit": 1},
+        )
+    assert out == {}
+    assert g.call_args.kwargs.get("timeout") == 15
+    assert g.call_args.kwargs.get("params") == {"limit": 1}
+
+
+@pytest.mark.parametrize("code", [401, 403])
+def test_validate_via_get_rejected_key_is_russian(code):
+    r = MagicMock(status_code=code, text="unauthorized")
+    with patch("providers._common.requests.get", return_value=r):
+        with pytest.raises(ProviderError, match="X отклонил ключ"):
+            validate_via_get("u", headers={}, provider="X")
+
+
+def test_validate_via_get_http_error_truncates_to_300():
+    r = MagicMock(status_code=500, text="y" * 1000)
+    with patch("providers._common.requests.get", return_value=r):
+        with pytest.raises(
+            ProviderError, match="проверка ключа не удалась"
+        ) as ei:
+            validate_via_get("u", headers={}, provider="X")
+    assert "y" * 300 in str(ei.value)
+    assert "y" * 301 not in str(ei.value)
+
+
+def test_validate_via_get_network_failure():
+    with patch(
+        "providers._common.requests.get",
+        side_effect=requests.RequestException("boom"),
+    ):
+        with pytest.raises(
+            ProviderError, match="Сеть не отвечает при проверке ключа"
+        ):
+            validate_via_get("u", headers={}, provider="X")

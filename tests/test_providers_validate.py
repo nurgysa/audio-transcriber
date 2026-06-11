@@ -45,10 +45,10 @@ def test_base_default_refuses_with_provider_error():
 @pytest.mark.parametrize(
     ("cls", "module", "url_part"),
     [
-        (AssemblyAIProvider, "providers.assemblyai", "/transcript"),
-        (DeepgramProvider, "providers.deepgram", "auth/token"),
-        (GladiaProvider, "providers.gladia", "/pre-recorded"),
-        (SpeechmaticsProvider, "providers.speechmatics", "/jobs"),
+        (AssemblyAIProvider, "providers._common", "/transcript"),
+        (DeepgramProvider, "providers._common", "auth/token"),
+        (GladiaProvider, "providers._common", "/pre-recorded"),
+        (SpeechmaticsProvider, "providers._common", "/jobs"),
     ],
 )
 def test_validate_ok_hits_cheap_endpoint(cls, module, url_part):
@@ -65,10 +65,10 @@ def test_validate_ok_hits_cheap_endpoint(cls, module, url_part):
 @pytest.mark.parametrize(
     ("cls", "module"),
     [
-        (AssemblyAIProvider, "providers.assemblyai"),
-        (DeepgramProvider, "providers.deepgram"),
-        (GladiaProvider, "providers.gladia"),
-        (SpeechmaticsProvider, "providers.speechmatics"),
+        (AssemblyAIProvider, "providers._common"),
+        (DeepgramProvider, "providers._common"),
+        (GladiaProvider, "providers._common"),
+        (SpeechmaticsProvider, "providers._common"),
     ],
 )
 def test_validate_rejected_key_raises_russian_provider_error(cls, module):
@@ -81,10 +81,10 @@ def test_validate_rejected_key_raises_russian_provider_error(cls, module):
 @pytest.mark.parametrize(
     ("cls", "module"),
     [
-        (AssemblyAIProvider, "providers.assemblyai"),
-        (DeepgramProvider, "providers.deepgram"),
-        (GladiaProvider, "providers.gladia"),
-        (SpeechmaticsProvider, "providers.speechmatics"),
+        (AssemblyAIProvider, "providers._common"),
+        (DeepgramProvider, "providers._common"),
+        (GladiaProvider, "providers._common"),
+        (SpeechmaticsProvider, "providers._common"),
     ],
 )
 def test_validate_network_failure_raises_provider_error(cls, module):

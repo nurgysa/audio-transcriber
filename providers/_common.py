@@ -77,3 +77,28 @@ def cancel_remote(url: str, headers: dict, *, provider: str) -> None:
             "%s cancel-DELETE failed for %s (job may stay billable): %s",
             provider, url, e,
         )
+
+
+def validate_via_get(url: str, *, headers: dict, provider: str,
+                     params: dict | None = None) -> dict:
+    """Shared body for provider ``validate_key`` overrides.
+
+    Cheapest authenticated GET; 2xx proves the key is live. Self-contained
+    (does not route through ``request()``) — its >=400 template differs
+    and the base-class default-refuse contract from #133 stays in base.py.
+    """
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=15)
+    except requests.RequestException as e:
+        raise ProviderError(f"Сеть не отвечает при проверке ключа: {e}") from e
+    if r.status_code in (401, 403):
+        raise ProviderError(
+            f"{provider} отклонил ключ (401). Проверь API-ключ в "
+            "Настройках → Облако."
+        )
+    if r.status_code >= 400:
+        raise ProviderError(
+            f"{provider}: проверка ключа не удалась ({r.status_code}): "
+            f"{r.text[:300]}"
+        )
+    return {}
