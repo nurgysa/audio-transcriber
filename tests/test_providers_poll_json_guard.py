@@ -36,7 +36,7 @@ def test_assemblyai_poll_non_json_raises_providererror():
 def test_gladia_poll_non_json_raises_providererror():
     from providers.gladia import GladiaProvider
     p = GladiaProvider("test-key")
-    with patch("providers.gladia.requests.get", return_value=_non_json_ok_response()):
+    with patch("providers._common.requests.get", return_value=_non_json_ok_response()):
         with pytest.raises(ProviderError):
             p._poll("https://api.gladia.io/v2/transcription/x/result", None, None)
 
