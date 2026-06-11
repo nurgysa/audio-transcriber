@@ -44,6 +44,6 @@ def test_gladia_poll_non_json_raises_providererror():
 def test_speechmatics_poll_non_json_raises_providererror():
     from providers.speechmatics import SpeechmaticsProvider
     p = SpeechmaticsProvider("test-key")
-    with patch("providers.speechmatics.requests.get", return_value=_non_json_ok_response()):
+    with patch("providers._common.requests.get", return_value=_non_json_ok_response()):
         with pytest.raises(ProviderError):
             p._wait_for_job("job-id", None, None)
