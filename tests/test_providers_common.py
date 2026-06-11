@@ -16,8 +16,10 @@ import requests
 from providers._common import (
     cancel_remote,
     check_cancel,
+    extract_json_key,
     file_stream,
     guess_content_type,
+    parse_json,
     request,
     require_key,
     validate_via_get,
@@ -266,3 +268,43 @@ def test_request_non_ok_uses_action_en_and_truncates():
                     action_en="upload", timeout=30)
     assert "z" * 300 in str(ei.value)
     assert "z" * 301 not in str(ei.value)
+
+
+# ── parse_json / extract_json_key ─────────────────────────────────────
+
+
+def test_parse_json_ok():
+    r = MagicMock()
+    r.json.return_value = {"a": 1}
+    assert parse_json(r, provider="X") == {"a": 1}
+
+
+def test_parse_json_invalid_with_context():
+    r = MagicMock(text="<html>oops</html>")
+    r.json.side_effect = ValueError("no json")
+    with pytest.raises(
+        ProviderError, match="Неожиданный ответ X на upload: <html>oops"
+    ):
+        parse_json(r, provider="X", context="upload")
+
+
+def test_parse_json_invalid_without_context():
+    r = MagicMock(text="<html>oops</html>")
+    r.json.side_effect = ValueError("no json")
+    with pytest.raises(ProviderError, match="Неожиданный ответ X: <html>oops"):
+        parse_json(r, provider="X")
+
+
+def test_extract_json_key_ok():
+    r = MagicMock()
+    r.json.return_value = {"upload_url": "https://cdn/u1"}
+    assert extract_json_key(
+        r, "upload_url", provider="X", context="upload"
+    ) == "https://cdn/u1"
+
+
+def test_extract_json_key_missing_key():
+    r = MagicMock(text='{"other": 1}')
+    r.json.return_value = {"other": 1}
+    with pytest.raises(ProviderError, match="Неожиданный ответ X на submit"):
+        extract_json_key(r, "id", provider="X", context="submit")

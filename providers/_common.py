@@ -136,6 +136,30 @@ def request(method: str, url: str, *, provider: str, action_ru: str,
     return r
 
 
+def parse_json(resp: requests.Response, *, provider: str,
+               context: str | None = None) -> dict:
+    """Decode a JSON body or raise the shared «Неожиданный ответ» error."""
+    try:
+        return resp.json()
+    except ValueError as e:
+        where = f" на {context}" if context else ""
+        raise ProviderError(
+            f"Неожиданный ответ {provider}{where}: {resp.text[:300]}"
+        ) from e
+
+
+def extract_json_key(resp: requests.Response, key: str, *, provider: str,
+                     context: str):
+    """parse_json + required-key lookup, same error message on miss."""
+    payload = parse_json(resp, provider=provider, context=context)
+    try:
+        return payload[key]
+    except KeyError as e:
+        raise ProviderError(
+            f"Неожиданный ответ {provider} на {context}: {resp.text[:300]}"
+        ) from e
+
+
 def file_stream(path: str, *, cancel_event, on_progress,
                 band: float = 70.0, chunk_size: int = UPLOAD_CHUNK):
     """Chunked file reader for streaming upload bodies.
