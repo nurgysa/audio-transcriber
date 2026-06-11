@@ -194,3 +194,23 @@ def test_file_stream_cancel_mid_stream(tmp_path):
     ev.set()
     with pytest.raises(TranscriptionCancelled):
         next(gen)
+
+
+def test_file_stream_custom_band_scales_progress(tmp_path):
+    f = tmp_path / "a.bin"
+    f.write_bytes(b"0123456789")  # 10 bytes
+    calls: list[float] = []
+    list(file_stream(str(f), cancel_event=None, on_progress=calls.append,
+                     band=40.0, chunk_size=5))
+    assert calls == pytest.approx([20.0, 40.0])
+
+
+def test_file_stream_empty_file_yields_nothing_no_progress(tmp_path):
+    f = tmp_path / "empty.bin"
+    f.write_bytes(b"")
+    calls: list[float] = []
+    chunks = list(
+        file_stream(str(f), cancel_event=None, on_progress=calls.append)
+    )
+    assert chunks == []
+    assert calls == []  # size == 0 guard: no div-by-zero, no bogus 0%
