@@ -28,7 +28,7 @@ def _non_json_ok_response() -> MagicMock:
 def test_assemblyai_poll_non_json_raises_providererror():
     from providers.assemblyai import AssemblyAIProvider
     p = AssemblyAIProvider("test-key")
-    with patch("providers.assemblyai.requests.get", return_value=_non_json_ok_response()):
+    with patch("providers._common.requests.get", return_value=_non_json_ok_response()):
         with pytest.raises(ProviderError):
             p._poll("transcript-id", None, None)
 
