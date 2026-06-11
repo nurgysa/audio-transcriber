@@ -139,9 +139,9 @@ def test_cancel_remote_logs_request_exception_does_not_raise(caplog):
     p = AssemblyAIProvider("k")
     import requests
     with patch(
-        "providers.assemblyai.requests.delete",
+        "providers._common.requests.delete",
         side_effect=requests.ConnectionError("boom"),
-    ), caplog.at_level(logging.WARNING, logger="providers.assemblyai"):
+    ), caplog.at_level(logging.WARNING, logger="providers._common"):
         p._cancel_remote("transcript-123")  # should NOT raise
     assert any("cancel-DELETE failed" in rec.message for rec in caplog.records)
     assert any("transcript-123" in rec.message for rec in caplog.records)
@@ -150,8 +150,8 @@ def test_cancel_remote_logs_request_exception_does_not_raise(caplog):
 def test_cancel_remote_success_no_log(caplog):
     p = AssemblyAIProvider("k")
     mock_resp = MagicMock(ok=True, status_code=200)
-    with patch("providers.assemblyai.requests.delete", return_value=mock_resp):
-        with caplog.at_level("WARNING", logger="providers.assemblyai"):
+    with patch("providers._common.requests.delete", return_value=mock_resp):
+        with caplog.at_level("WARNING", logger="providers._common"):
             p._cancel_remote("transcript-456")
     assert caplog.records == []
 

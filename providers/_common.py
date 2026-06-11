@@ -1,8 +1,8 @@
 """Shared transport machinery for cloud transcription providers.
 
 Everything here is plumbing that must behave identically across the four
-providers: cancel checks, MIME guessing, key checks, the HTTP error idiom,
-the completion poll loop, streaming upload, best-effort remote cancel.
+providers: cancel checks, MIME guessing, key checks, streaming upload, best-effort
+remote cancel; PR-2 adds the HTTP error idiom and the completion poll loop.
 Domain logic (payload building, response mapping, workflow order) stays in
 the provider modules.
 
@@ -12,9 +12,14 @@ Test contract: HTTP is patched at ONE canonical target —
 
 from __future__ import annotations
 
+import logging
 import os
 
+import requests
+
 from .base import ProviderError
+
+_logger = logging.getLogger(__name__)
 
 #: Upload chunk size for streaming bodies. 5 MB: small enough for snappy
 #: cancel polling, big enough that per-chunk overhead is negligible.
@@ -54,3 +59,20 @@ def require_key(api_key: str | None, provider: str) -> str:
             "вставь ключ."
         )
     return api_key.strip()
+
+
+def cancel_remote(url: str, headers: dict, *, provider: str) -> None:
+    """Best-effort DELETE of a remote job on local cancel/failure.
+
+    Network/auth failures are logged but not raised — by the time we call
+    this, the user has already cancelled and the UI has moved on. Repeated
+    failures mean we're being billed for stuck jobs, so the warning level
+    surfaces the issue in app.log.
+    """
+    try:
+        requests.delete(url, headers=headers, timeout=10)
+    except requests.RequestException as e:
+        _logger.warning(
+            "%s cancel-DELETE failed for %s (job may stay billable): %s",
+            provider, url, e,
+        )

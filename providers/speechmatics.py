@@ -22,7 +22,7 @@ import time
 
 import requests
 
-from ._common import check_cancel, guess_content_type, require_key
+from ._common import cancel_remote, check_cancel, guess_content_type, require_key
 from .base import (
     ProviderError,
     TranscriptionOptions,
@@ -244,16 +244,12 @@ class SpeechmaticsProvider(TranscriptionProvider):
             ) from e
 
     def _cancel_remote(self, job_id: str) -> None:
-        """Best-effort DELETE on cancel — avoids being billed for a run we
-        already gave up on. Errors are swallowed."""
-        try:
-            requests.delete(
-                f"{_API_BASE}/jobs/{job_id}",
-                headers=self._headers,
-                timeout=10,
-            )
-        except Exception:
-            pass
+        """Best-effort server-side cancel (details in _common.cancel_remote)."""
+        cancel_remote(
+            f"{_API_BASE}/jobs/{job_id}",
+            self._headers,
+            provider=self.display_name,
+        )
 
 
 # ---------------------------- helpers ---------------------------------

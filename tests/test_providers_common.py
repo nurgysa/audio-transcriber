@@ -6,11 +6,15 @@ integration coverage on top of these units.
 """
 from __future__ import annotations
 
+import logging
 import threading
+from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from providers._common import (
+    cancel_remote,
     check_cancel,
     guess_content_type,
     require_key,
@@ -71,3 +75,26 @@ def test_require_key_strips_and_returns():
 def test_require_key_empty_raises_with_provider_name(bad):
     with pytest.raises(ProviderError, match="API-ключ Gladia не задан"):
         require_key(bad, "Gladia")
+
+
+# ── cancel_remote ─────────────────────────────────────────────────────
+
+
+def test_cancel_remote_network_error_logged_not_raised(caplog):
+    with patch(
+        "providers._common.requests.delete",
+        side_effect=requests.ConnectionError("boom"),
+    ), caplog.at_level(logging.WARNING, logger="providers._common"):
+        cancel_remote("https://api.example/jobs/42", {"h": "1"}, provider="X")
+    assert any("cancel-DELETE failed" in r.message for r in caplog.records)
+    assert any("jobs/42" in r.message for r in caplog.records)
+
+
+def test_cancel_remote_success_no_log(caplog):
+    with patch(
+        "providers._common.requests.delete",
+        return_value=MagicMock(ok=True, status_code=200),
+    ):
+        with caplog.at_level("WARNING", logger="providers._common"):
+            cancel_remote("https://api.example/jobs/42", {}, provider="X")
+    assert caplog.records == []
