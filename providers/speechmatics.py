@@ -134,7 +134,11 @@ class SpeechmaticsProvider(TranscriptionProvider):
         )
 
     def _wait_for_job(self, job_id: str, on_status, cancel_event) -> None:
-        """Poll /v2/jobs/{id} until done — shared loop, Speechmatics knobs."""
+        """Poll /v2/jobs/{id} until done — shared loop, Speechmatics knobs.
+
+        Returns None deliberately: the job-status payload is not the
+        transcript; ``_fetch_transcript`` does the real result fetch.
+        """
         spec = PollSpec(
             url=f"{_API_BASE}/jobs/{job_id}",
             headers=self._headers,
