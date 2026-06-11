@@ -22,6 +22,7 @@ import time
 
 import requests
 
+from ._common import cancel_remote, check_cancel, guess_content_type, require_key, validate_via_get
 from .base import (
     ProviderError,
     TranscriptionOptions,
@@ -42,34 +43,15 @@ class SpeechmaticsProvider(TranscriptionProvider):
     supports_mixed = True  # KZ in multilingual model + language_identification_config
 
     def __init__(self, api_key: str):
-        if not api_key or not api_key.strip():
-            raise ProviderError(
-                "API-ключ Speechmatics не задан. Открой Настройки → "
-                "Облако и вставь ключ."
-            )
-        self._api_key = api_key.strip()
+        self._api_key = require_key(api_key, "Speechmatics")
         self._headers = {"Authorization": f"Bearer {self._api_key}"}
 
     def validate_key(self) -> dict:
         """Cheap auth check: GET /jobs/?limit=1 — 2xx means the key is live."""
-        try:
-            r = requests.get(
-                f"{_API_BASE}/jobs/", params={"limit": 1},
-                headers=self._headers, timeout=15,
-            )
-        except requests.RequestException as e:
-            raise ProviderError(f"Сеть не отвечает при проверке ключа: {e}") from e
-        if r.status_code in (401, 403):
-            raise ProviderError(
-                "Speechmatics отклонил ключ (401). Проверь API-ключ в "
-                "Настройках → Облако."
-            )
-        if r.status_code >= 400:
-            raise ProviderError(
-                f"Speechmatics: проверка ключа не удалась ({r.status_code}): "
-                f"{r.text[:200]}"
-            )
-        return {}
+        return validate_via_get(
+            f"{_API_BASE}/jobs/", headers=self._headers,
+            provider=self.display_name, params={"limit": 1},
+        )
 
     # --------------------------- public API ----------------------------
 
@@ -84,7 +66,7 @@ class SpeechmaticsProvider(TranscriptionProvider):
         if not os.path.isfile(audio_path):
             raise ProviderError(f"Файл не найден: {audio_path}")
 
-        self._check_cancel(cancel_event)
+        check_cancel(cancel_event)
         if on_status:
             on_status("Загрузка аудио в Speechmatics...")
         if on_progress:
@@ -126,7 +108,7 @@ class SpeechmaticsProvider(TranscriptionProvider):
         with open(path, "rb") as f:
             files = {
                 "data_file": (
-                    os.path.basename(path), f, _guess_content_type(path),
+                    os.path.basename(path), f, guess_content_type(path),
                 ),
                 "config": (None, json.dumps(config), "application/json"),
             }
@@ -165,7 +147,7 @@ class SpeechmaticsProvider(TranscriptionProvider):
         start = time.monotonic()
         last_status = ""
         while True:
-            self._check_cancel(cancel_event)
+            check_cancel(cancel_event)
             elapsed = time.monotonic() - start
             if elapsed > _MAX_WAIT_S:
                 raise ProviderError(
@@ -217,7 +199,7 @@ class SpeechmaticsProvider(TranscriptionProvider):
 
             slept = 0.0
             while slept < _POLL_INTERVAL_S:
-                self._check_cancel(cancel_event)
+                check_cancel(cancel_event)
                 time.sleep(0.25)
                 slept += 0.25
 
@@ -248,37 +230,15 @@ class SpeechmaticsProvider(TranscriptionProvider):
             ) from e
 
     def _cancel_remote(self, job_id: str) -> None:
-        """Best-effort DELETE on cancel — avoids being billed for a run we
-        already gave up on. Errors are swallowed."""
-        try:
-            requests.delete(
-                f"{_API_BASE}/jobs/{job_id}",
-                headers=self._headers,
-                timeout=10,
-            )
-        except Exception:
-            pass
-
-    @staticmethod
-    def _check_cancel(cancel_event) -> None:
-        if cancel_event is not None and cancel_event.is_set():
-            from transcriber import TranscriptionCancelled
-            raise TranscriptionCancelled()
+        """Best-effort server-side cancel (details in _common.cancel_remote)."""
+        cancel_remote(
+            f"{_API_BASE}/jobs/{job_id}",
+            self._headers,
+            provider=self.display_name,
+        )
 
 
 # ---------------------------- helpers ---------------------------------
-
-
-def _guess_content_type(path: str) -> str:
-    ext = os.path.splitext(path)[1].lower()
-    return {
-        ".mp3":  "audio/mpeg",
-        ".wav":  "audio/wav",
-        ".m4a":  "audio/mp4",
-        ".flac": "audio/flac",
-        ".ogg":  "audio/ogg",
-        ".webm": "audio/webm",
-    }.get(ext, "application/octet-stream")
 
 
 def _build_config(options: TranscriptionOptions) -> dict:

@@ -19,12 +19,12 @@ when the user picked auto.
 
 from __future__ import annotations
 
-import logging
 import os
 import time
 
 import requests
 
+from ._common import cancel_remote, check_cancel, file_stream, require_key, validate_via_get
 from .base import (
     ProviderError,
     TranscriptionOptions,
@@ -32,13 +32,7 @@ from .base import (
     TranscriptionResult,
 )
 
-_logger = logging.getLogger(__name__)
-
 _API_BASE = "https://api.assemblyai.com/v2"
-# Upload chunk size for streaming the audio into POST /v2/upload. 5 MB is a
-# good middle ground: small enough to give responsive cancel-poll feedback,
-# big enough that overhead is negligible vs. AssemblyAI's accept loop.
-_UPLOAD_CHUNK = 5 * 1024 * 1024
 # Polling cadence for transcript completion. AssemblyAI typically processes
 # audio at 5-15× realtime; 3 s keeps wall-time-to-final-status low without
 # burning quota on excessive GETs.
@@ -56,34 +50,15 @@ class AssemblyAIProvider(TranscriptionProvider):
     supports_mixed = True  # Universal-2 covers 99 languages including Kazakh ('kk')
 
     def __init__(self, api_key: str):
-        if not api_key or not api_key.strip():
-            raise ProviderError(
-                "API-ключ AssemblyAI не задан. Открой Настройки → Облако и "
-                "вставь ключ."
-            )
-        self._api_key = api_key.strip()
+        self._api_key = require_key(api_key, "AssemblyAI")
         self._headers = {"authorization": self._api_key}
 
     def validate_key(self) -> dict:
         """Cheap auth check: GET /transcript?limit=1 — 2xx means the key is live."""
-        try:
-            r = requests.get(
-                f"{_API_BASE}/transcript", params={"limit": 1},
-                headers=self._headers, timeout=15,
-            )
-        except requests.RequestException as e:
-            raise ProviderError(f"Сеть не отвечает при проверке ключа: {e}") from e
-        if r.status_code in (401, 403):
-            raise ProviderError(
-                "AssemblyAI отклонил ключ (401). Проверь API-ключ в "
-                "Настройках → Облако."
-            )
-        if r.status_code >= 400:
-            raise ProviderError(
-                f"AssemblyAI: проверка ключа не удалась ({r.status_code}): "
-                f"{r.text[:200]}"
-            )
-        return {}
+        return validate_via_get(
+            f"{_API_BASE}/transcript", headers=self._headers,
+            provider=self.display_name, params={"limit": 1},
+        )
 
     # --------------------------- public API ----------------------------
 
@@ -98,7 +73,7 @@ class AssemblyAIProvider(TranscriptionProvider):
         if not os.path.isfile(audio_path):
             raise ProviderError(f"Файл не найден: {audio_path}")
 
-        self._check_cancel(cancel_event)
+        check_cancel(cancel_event)
         if on_status:
             on_status("Загрузка аудио в AssemblyAI...")
 
@@ -106,7 +81,7 @@ class AssemblyAIProvider(TranscriptionProvider):
             audio_path, on_progress=on_progress, cancel_event=cancel_event,
         )
 
-        self._check_cancel(cancel_event)
+        check_cancel(cancel_event)
         if on_status:
             on_status("Запуск задачи...")
 
@@ -141,29 +116,14 @@ class AssemblyAIProvider(TranscriptionProvider):
         approximate progress bar (0..70% slice — leaves 70..100 for the
         remote processing phase, mirroring the local progress contract).
         """
-        size = os.path.getsize(audio_path)
-        sent = 0
-
-        def _gen():
-            nonlocal sent
-            with open(audio_path, "rb") as f:
-                while True:
-                    self._check_cancel(cancel_event)
-                    chunk = f.read(_UPLOAD_CHUNK)
-                    if not chunk:
-                        return
-                    sent += len(chunk)
-                    if on_progress and size > 0:
-                        # 0..70% band for upload, leaving 70..100 for
-                        # the AssemblyAI processing wait below.
-                        on_progress(min(sent / size, 1.0) * 70.0)
-                    yield chunk
-
         try:
             r = requests.post(
                 f"{_API_BASE}/upload",
                 headers=self._headers,
-                data=_gen(),
+                data=file_stream(
+                    audio_path, cancel_event=cancel_event,
+                    on_progress=on_progress,
+                ),
                 timeout=60 * 30,  # 30 min absolute upload cap
             )
         except requests.RequestException as e:
@@ -272,7 +232,7 @@ class AssemblyAIProvider(TranscriptionProvider):
         start = time.monotonic()
         last_status = ""
         while True:
-            self._check_cancel(cancel_event)
+            check_cancel(cancel_event)
             elapsed = time.monotonic() - start
             if elapsed > _MAX_WAIT_S:
                 raise ProviderError(
@@ -324,38 +284,18 @@ class AssemblyAIProvider(TranscriptionProvider):
             # 0.25 s slice for cancel responsiveness (vs. one big sleep).
             slept = 0.0
             while slept < _POLL_INTERVAL_S:
-                self._check_cancel(cancel_event)
+                check_cancel(cancel_event)
                 time.sleep(0.25)
                 slept += 0.25
 
     def _cancel_remote(self, transcript_id: str) -> None:
-        """Best-effort DELETE on cancel.
-
-        Network/auth failures are logged but not raised — by the time we
-        call this, the user has already cancelled and the UI has moved on.
-        However, repeated DELETE failures mean we're being billed for stuck
-        jobs, so the warning level surfaces the issue in app.log.
-        """
-        try:
-            requests.delete(
-                f"{_API_BASE}/transcript/{transcript_id}",
-                headers=self._headers,
-                timeout=10,
-            )
-        except requests.RequestException as e:
-            _logger.warning(
-                "AssemblyAI cancel-DELETE failed for %s (job may stay billable): %s",
-                transcript_id, e,
-            )
-
-    @staticmethod
-    def _check_cancel(cancel_event) -> None:
-        # Imported lazily to keep the provider package free of any direct
-        # dependency on the transcriber module — the exception class is
-        # the only piece of contract we need here.
-        if cancel_event is not None and cancel_event.is_set():
-            from transcriber import TranscriptionCancelled
-            raise TranscriptionCancelled()
+        """Best-effort server-side cancel so the user isn't billed for a
+        run we already gave up on (details in _common.cancel_remote)."""
+        cancel_remote(
+            f"{_API_BASE}/transcript/{transcript_id}",
+            self._headers,
+            provider=self.display_name,
+        )
 
 
 # ----------------------- response → segments map -----------------------
