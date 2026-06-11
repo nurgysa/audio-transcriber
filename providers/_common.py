@@ -64,8 +64,9 @@ def require_key(api_key: str | None, provider: str) -> str:
 def cancel_remote(url: str, headers: dict, *, provider: str) -> None:
     """Best-effort DELETE of a remote job on local cancel/failure.
 
-    Network/auth failures are logged but not raised — by the time we call
-    this, the user has already cancelled and the UI has moved on. Repeated
+    Transport-layer failures are logged but not raised — by the time we
+    call this, the user has already cancelled and the UI has moved on;
+    HTTP error responses are ignored entirely (best-effort). Repeated
     failures mean we're being billed for stuck jobs, so the warning level
     surfaces the issue in app.log.
     """

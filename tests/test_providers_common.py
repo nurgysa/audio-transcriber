@@ -98,3 +98,14 @@ def test_cancel_remote_success_no_log(caplog):
         with caplog.at_level("WARNING", logger="providers._common"):
             cancel_remote("https://api.example/jobs/42", {}, provider="X")
     assert caplog.records == []
+
+
+def test_cancel_remote_unexpected_exception_propagates():
+    """The except is deliberately narrow (RequestException only) — a
+    non-requests failure must propagate, not be silently swallowed."""
+    with patch(
+        "providers._common.requests.delete",
+        side_effect=ValueError("not a transport error"),
+    ):
+        with pytest.raises(ValueError):
+            cancel_remote("https://api.example/jobs/42", {}, provider="X")
