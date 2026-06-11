@@ -11,11 +11,10 @@ authoritative text.
 |---|---|---|---|
 | FFmpeg (`ffmpeg.exe`, `ffprobe.exe`) | 8.1.1 essentials (gyan.dev) | **GPL v3** | Invoked as a separate process, not linked. See [`vendor/ffmpeg/LICENSE.txt`](vendor/ffmpeg/LICENSE.txt). Source: https://www.gyan.dev/ffmpeg/builds/ |
 | CustomTkinter | 5.2.2 | MIT | UI toolkit |
-| requests | 2.32.5 | Apache-2.0 | HTTP client |
+| requests | 2.33.0 | Apache-2.0 | HTTP client |
 | soundfile | 0.13.1 | BSD-3-Clause | audio I/O (libsndfile) |
 | sounddevice | 0.5.5 | MIT | audio capture (PortAudio) |
 | numpy | 2.2.6 | BSD-3-Clause | arrays |
-| scipy | 1.15.3 | BSD-3-Clause | signal processing |
 | psutil | 6.1.0 | BSD-3-Clause | process utilities |
 | google-auth / google-auth-oauthlib / google-api-python-client | 2.46.0 / 1.3.0 / 2.196.0 | Apache-2.0 | Google Drive backup |
 | markitdown[docx,pdf,pptx,xlsx] | 0.1.6 | MIT | reference-document → Markdown grounding |
