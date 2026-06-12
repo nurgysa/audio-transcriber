@@ -244,8 +244,10 @@ def get_hermes_webhook_config(config: dict | None = None) -> HermesWebhookConfig
         return os.environ.get(_ENV_PREFIX + suffix)
 
     # ── enabled ──────────────────────────────────────────────────────
+    # Empty env string = unset (falls through to config) — the same
+    # semantics as cli.config.resolve, uniform across all five fields.
     enabled_env = _env("ENABLED")
-    if enabled_env is not None:
+    if enabled_env:
         enabled = _parse_bool(enabled_env)
     else:
         enabled = _parse_bool(cfg.get("hermes_webhook_enabled", False))
@@ -258,7 +260,7 @@ def get_hermes_webhook_config(config: dict | None = None) -> HermesWebhookConfig
 
     # ── timeout ───────────────────────────────────────────────────────
     timeout_env = _env("TIMEOUT_SECONDS")
-    if timeout_env is not None:
+    if timeout_env:  # empty env string = unset, same as the other fields
         timeout = _parse_timeout(timeout_env)
     else:
         timeout = _parse_timeout(cfg.get("hermes_webhook_timeout_seconds", _DEFAULT_TIMEOUT))

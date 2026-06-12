@@ -366,6 +366,22 @@ def test_bool_parsing_via_env(monkeypatch, value, expected):
     assert cfg.enabled is expected, f"bool({value!r}) should be {expected}"
 
 
+def test_empty_env_string_falls_through_to_config(monkeypatch):
+    """Empty env string = unset (cli.config.resolve semantics): it must not
+    clobber a configured value — uniformly across all five fields."""
+    monkeypatch.setenv("AUDIO_TRANSCRIBER_HERMES_WEBHOOK_ENABLED", "")
+    monkeypatch.setenv("AUDIO_TRANSCRIBER_HERMES_WEBHOOK_TIMEOUT_SECONDS", "")
+    monkeypatch.setenv("AUDIO_TRANSCRIBER_HERMES_WEBHOOK_SECRET", "")
+    cfg = get_hermes_webhook_config({
+        "hermes_webhook_enabled": True,
+        "hermes_webhook_timeout_seconds": 25,
+        "hermes_webhook_secret": "configsecret",
+    })
+    assert cfg.enabled is True
+    assert cfg.timeout_seconds == 25.0
+    assert cfg.secret == "configsecret"
+
+
 def test_real_bool_true_passthrough():
     """A real Python True in config dict is accepted as-is."""
     cfg = get_hermes_webhook_config({"hermes_webhook_enabled": True})
