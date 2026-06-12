@@ -6,8 +6,8 @@ defaults so the caller never needs to guard before calling.
 """
 from __future__ import annotations
 
+import ntpath
 from datetime import datetime, timezone
-from pathlib import Path
 
 
 def build_audio_transcribed_event(
@@ -31,7 +31,8 @@ def build_audio_transcribed_event(
     Args:
         transcript_text: Full transcript string. Never audio bytes.
         audio_path: Absolute or relative path to the source audio file.
-            ``audio.filename`` is derived as ``Path(audio_path).name``.
+            ``audio.filename`` is its basename (both ``/`` and ``\\``
+            recognized as separators on any OS).
         history_folder: Path to the meeting history folder for this run.
         provider: Cloud STT provider name (e.g. ``"AssemblyAI"``).
         language: BCP-47 language code (e.g. ``"ru"``) or ``"mixed"``.
@@ -56,7 +57,11 @@ def build_audio_transcribed_event(
     path_str: str | None = None
     if audio_path is not None:
         path_str = audio_path
-        filename = Path(audio_path).name
+        # ntpath.basename splits on BOTH / and \ regardless of host OS:
+        # the producer is usually the Windows app, but the CLI may run on
+        # a Linux Hermes host — the payload must not depend on where the
+        # event was built (PosixPath.name treats \ as a literal char).
+        filename = ntpath.basename(audio_path) or None
 
     return {
         "event_type": "audio.transcribed",
