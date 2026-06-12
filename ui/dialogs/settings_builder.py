@@ -432,6 +432,37 @@ def build_trello_section(dialog, parent) -> None:
     dialog._trello_status = refs["status"]
 
 
+def build_dedup_section(dialog, parent) -> None:
+    """Dedup on/off — the only user-facing dedup knob (spec 2026-06-11).
+
+    dedup_fuzzy_high / dedup_fuzzy_low stay config-only expert knobs
+    (tasks.dedup.resolve_thresholds guards garbage). The consumer gate
+    is the Extract dialog reading config.get("dedup_enabled", True).
+    """
+    section = section_card(dialog, parent, "Дубли задач", row=4)
+
+    dialog._dedup_enabled_var = ctk.BooleanVar(
+        value=bool(dialog._parent._config.get("dedup_enabled", True)),
+    )
+
+    def _on_toggled() -> None:
+        dialog._parent._config["dedup_enabled"] = bool(
+            dialog._dedup_enabled_var.get(),
+        )
+        save_config(dialog._parent._config)
+
+    ctk.CTkCheckBox(
+        section,
+        text="Проверять дубли перед отправкой (комментарий вместо новой карточки)",
+        variable=dialog._dedup_enabled_var,
+        command=_on_toggled,
+        font=ctk.CTkFont(family=FONT, size=13),
+        text_color=TEXT_PRIMARY, fg_color=BLUE, hover_color=BLUE_DIM,
+        border_color=BORDER, corner_radius=4,
+        checkbox_height=20, checkbox_width=20,
+    ).grid(row=0, column=0, columnspan=2, padx=4, pady=6, sticky="w")
+
+
 def build_gdrive_section(dialog, parent) -> None:
     """Google Drive backup: sign-in/out + status badge.
 
