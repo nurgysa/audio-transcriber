@@ -11,6 +11,9 @@ bind to them directly. Closing the dialog destroys widgets but leaves the
 vars untouched, so subsequent transcribe() calls read the right values.
 The existing _on_*_changed callbacks on App fire on every change and persist
 to config.json — no extra save logic needed here.
+Exceptions: _meetings_path_var and _dedup_enabled_var are dialog-local UI
+proxies — their values reach consumers via immediate save_config (config is
+the source of truth), not via a surviving var.
 Widget construction lives in ui/dialogs/settings_builder.py (free
 build_*_section functions); this module owns state, traces, handlers and
 workers.
