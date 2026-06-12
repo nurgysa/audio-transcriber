@@ -1,0 +1,283 @@
+"""Tests for the Hermes webhook client.
+
+All nine spec §11.2 client behaviors are covered. Network is patched at
+``integrations.hermes.client.requests.post`` — the canonical house pattern
+(patch where it is USED). No new test dependencies beyond stdlib unittest.mock.
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+import requests
+
+from integrations.hermes.client import (
+    HermesWebhookConfig,
+    HermesWebhookResult,
+    emit_audio_transcribed_event,
+    post_event,
+    serialize_payload,
+    sign_body,
+)
+
+# ── helpers ──────────────────────────────────────────────────────────
+
+_ENABLED_CONFIG = HermesWebhookConfig(
+    enabled=True,
+    url="http://localhost:8644/webhooks/audio-transcribed",
+    secret="s3cr3t",
+    timeout_seconds=5.0,
+    routing_hint="obsidian_inbox",
+)
+
+_SIMPLE_PAYLOAD = {"event_type": "audio.transcribed", "version": "1.0"}
+
+
+# ── 1. Disabled config makes no request ──────────────────────────────
+
+def test_disabled_config_no_request():
+    config = HermesWebhookConfig(enabled=False)
+    with patch("integrations.hermes.client.requests.post") as mock_post:
+        result = post_event(_SIMPLE_PAYLOAD, config)
+    mock_post.assert_not_called()
+    assert result.enabled is False
+    assert result.sent is False
+    assert result.error is None
+
+
+# ── 2. Enabled + empty URL → error, no request ───────────────────────
+
+def test_empty_url_returns_error_no_request():
+    config = HermesWebhookConfig(enabled=True, url="", secret="x")
+    with patch("integrations.hermes.client.requests.post") as mock_post:
+        result = post_event(_SIMPLE_PAYLOAD, config)
+    mock_post.assert_not_called()
+    assert result.enabled is True
+    assert result.sent is False
+    assert result.error is not None
+
+
+# ── 3. Enabled + empty secret → error, no request ────────────────────
+
+def test_empty_secret_returns_error_no_request():
+    config = HermesWebhookConfig(
+        enabled=True,
+        url="http://localhost:8644/webhooks/audio-transcribed",
+        secret="",
+    )
+    with patch("integrations.hermes.client.requests.post") as mock_post:
+        result = post_event(_SIMPLE_PAYLOAD, config)
+    mock_post.assert_not_called()
+    assert result.enabled is True
+    assert result.sent is False
+    assert result.error is not None
+
+
+# ── 4. serialize_payload is deterministic ────────────────────────────
+
+def test_serialize_payload_deterministic():
+    payload = {"z": 1, "a": 2, "m": [3, 4]}
+    b1 = serialize_payload(payload)
+    b2 = serialize_payload(payload)
+    assert b1 == b2
+    assert isinstance(b1, bytes)
+
+
+def test_serialize_payload_sort_keys():
+    payload = {"z": 1, "a": 2}
+    body = serialize_payload(payload)
+    decoded = body.decode("utf-8")
+    assert decoded.index('"a"') < decoded.index('"z"')
+
+
+def test_serialize_payload_compact_separators():
+    payload = {"k": "v"}
+    body = serialize_payload(payload)
+    # Compact: no spaces around separators
+    assert b" " not in body
+
+
+def test_serialize_payload_unicode_not_ascii_escaped():
+    payload = {"t": "Привет"}
+    body = serialize_payload(payload)
+    assert "Привет".encode("utf-8") in body
+
+
+# ── 5. sign_body matches known HMAC-SHA256 ───────────────────────────
+
+def test_sign_body_known_hmac():
+    body = b'{"event_type":"audio.transcribed"}'
+    secret = "test-secret"
+    expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    assert sign_body(secret, body) == expected
+
+
+def test_sign_body_returns_hex_string():
+    sig = sign_body("key", b"data")
+    assert isinstance(sig, str)
+    int(sig, 16)  # must be valid hex; raises ValueError if not
+
+
+# ── 6. Successful POST sends correct URL, body, headers, timeout ─────
+
+def test_successful_post_sends_correct_request():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.ok = True
+
+    with patch("integrations.hermes.client.requests.post",
+               return_value=mock_resp) as mock_post:
+        result = post_event(_SIMPLE_PAYLOAD, _ENABLED_CONFIG)
+
+    assert result.sent is True
+    assert result.status_code == 200
+    assert result.error is None
+
+    mock_post.assert_called_once()
+    call_args = mock_post.call_args
+
+    # Positional arg[0] or keyword 'url' must be the configured URL
+    called_url = call_args.args[0] if call_args.args else call_args.kwargs["url"]
+    assert called_url == _ENABLED_CONFIG.url
+
+    # data= must be the exact serialized bytes (NOT json=)
+    expected_body = serialize_payload(_SIMPLE_PAYLOAD)
+    called_data = call_args.kwargs.get("data")
+    assert called_data == expected_body, (
+        "POST body must be serialize_payload() bytes passed as data=, not json="
+    )
+
+    # Headers
+    headers = call_args.kwargs.get("headers", {})
+    assert headers.get("Content-Type") == "application/json"
+    assert "X-Webhook-Signature" in headers
+    assert "X-Request-ID" in headers
+
+    # Timeout
+    assert call_args.kwargs.get("timeout") == _ENABLED_CONFIG.timeout_seconds
+
+
+def test_x_webhook_signature_matches_body():
+    """The signature in the header must match HMAC over the exact body bytes."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.ok = True
+
+    with patch("integrations.hermes.client.requests.post",
+               return_value=mock_resp) as mock_post:
+        post_event(_SIMPLE_PAYLOAD, _ENABLED_CONFIG)
+
+    call_kwargs = mock_post.call_args.kwargs
+    body_bytes = call_kwargs["data"]
+    header_sig = call_kwargs["headers"]["X-Webhook-Signature"]
+    expected_sig = sign_body(_ENABLED_CONFIG.secret, body_bytes)
+    assert header_sig == expected_sig
+
+
+def test_x_request_id_format():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.ok = True
+
+    with patch("integrations.hermes.client.requests.post",
+               return_value=mock_resp) as mock_post:
+        post_event(_SIMPLE_PAYLOAD, _ENABLED_CONFIG)
+
+    req_id = mock_post.call_args.kwargs["headers"]["X-Request-ID"]
+    assert req_id.startswith("audio-transcriber:")
+
+
+# ── 7. Non-2xx returns sent=False with status code ───────────────────
+
+def test_non_2xx_returns_sent_false():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 503
+    mock_resp.ok = False
+
+    with patch("integrations.hermes.client.requests.post",
+               return_value=mock_resp):
+        result = post_event(_SIMPLE_PAYLOAD, _ENABLED_CONFIG)
+
+    assert result.sent is False
+    assert result.status_code == 503
+    assert result.error is not None
+
+
+# ── 8. requests.RequestException is caught, returned as error ────────
+
+def test_request_exception_caught():
+    with patch("integrations.hermes.client.requests.post",
+               side_effect=requests.RequestException("timeout")):
+        result = post_event(_SIMPLE_PAYLOAD, _ENABLED_CONFIG)
+
+    assert result.sent is False
+    assert result.error is not None
+    # Must not raise
+
+
+# ── 9. Secret never appears in result error ───────────────────────────
+
+def test_secret_not_in_error_for_non_2xx():
+    config = HermesWebhookConfig(
+        enabled=True,
+        url="http://localhost:8644/webhooks/audio-transcribed",
+        secret="super-secret-value",
+    )
+    mock_resp = MagicMock()
+    mock_resp.status_code = 401
+    mock_resp.ok = False
+
+    with patch("integrations.hermes.client.requests.post",
+               return_value=mock_resp):
+        result = post_event(_SIMPLE_PAYLOAD, config)
+
+    assert "super-secret-value" not in (result.error or "")
+
+
+def test_secret_not_in_error_for_request_exception():
+    config = HermesWebhookConfig(
+        enabled=True,
+        url="http://localhost:8644/webhooks/audio-transcribed",
+        secret="super-secret-value",
+        # RequestException message will NOT contain secret — but verify anyway
+    )
+    with patch("integrations.hermes.client.requests.post",
+               side_effect=requests.RequestException("connection refused")):
+        result = post_event(_SIMPLE_PAYLOAD, config)
+
+    assert "super-secret-value" not in (result.error or "")
+
+
+# ── emit_audio_transcribed_event convenience function ─────────────────
+
+def test_emit_convenience_calls_post():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.ok = True
+
+    with patch("integrations.hermes.client.requests.post",
+               return_value=mock_resp) as mock_post:
+        result = emit_audio_transcribed_event(
+            config=_ENABLED_CONFIG,
+            transcript_text="Тест",
+            audio_path="C:/tmp/test.m4a",
+            provider="Deepgram",
+            language="ru",
+        )
+
+    assert result.sent is True
+    mock_post.assert_called_once()
+
+
+def test_emit_disabled_config_no_request():
+    config = HermesWebhookConfig(enabled=False)
+    with patch("integrations.hermes.client.requests.post") as mock_post:
+        result = emit_audio_transcribed_event(
+            config=config,
+            transcript_text="x",
+        )
+    mock_post.assert_not_called()
+    assert result.sent is False
