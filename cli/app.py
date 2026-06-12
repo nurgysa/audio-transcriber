@@ -17,7 +17,6 @@ import sys
 from cli import config, core
 from cli._paths import ensure_outside_secret_store
 
-
 # ── Hermes webhook best-effort emitter ───────────────────────────────
 
 def _emit_hermes_event(cfg: dict, **fields) -> None:

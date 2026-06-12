@@ -23,7 +23,6 @@ import pytest
 
 from cli.app import EXIT_OK, _cmd_transcribe
 
-
 # ── Shared fixture: a fake TranscribeResult ───────────────────────────
 
 class _FakeResult:
@@ -126,7 +125,7 @@ def test_cmd_transcribe_enabled_stdout_json_unchanged(monkeypatch, capsys):
     assert code == EXIT_OK
     captured = capsys.readouterr()
     # stdout must be a single JSON object (exactly one non-empty line)
-    lines = [l for l in captured.out.splitlines() if l.strip()]
+    lines = [line for line in captured.out.splitlines() if line.strip()]
     assert len(lines) == 1, f"Expected 1 stdout line, got: {lines}"
     parsed = json.loads(lines[0])
     assert set(parsed.keys()) == {"text", "language", "provider", "segments", "diarized"}
