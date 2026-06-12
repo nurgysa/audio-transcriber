@@ -298,16 +298,39 @@ class SettingsDialog(ctk.CTkToplevel):
             menu.focus_set()
 
     def _refresh_meetings_stats(self) -> None:
-        """Compute «В этой папке: N встреч • X GB» and update the label."""
+        """Update «В этой папке: N встреч • X GB» without blocking Tk.
+
+        The meetings folder may hold multi-GB recordings/ (since #93), so
+        the os.walk size scan runs in a daemon thread. A generation
+        counter drops stale results when the user switches folders while
+        a previous scan is still walking.
+        """
         from meetings_migration import count_meetings
         from ui.dialogs.migration import _fmt_size, _folder_size_bytes
+
+        self._stats_gen = getattr(self, "_stats_gen", 0) + 1
+        gen = self._stats_gen
         path = self._meetings_path_var.get()
-        n = count_meetings(path)
-        size = _folder_size_bytes(path)
-        word = plural_ru(n, "встреча", "встречи", "встреч")
-        self._meetings_stats_label.configure(
-            text=f"В этой папке: {n} {word} • {_fmt_size(size)}",
-        )
+        self._meetings_stats_label.configure(text="Подсчёт…")
+
+        def worker() -> None:
+            n = count_meetings(path)
+            size = _folder_size_bytes(path)
+
+            def apply() -> None:
+                if gen != self._stats_gen:
+                    return  # stale — user already switched to another folder
+                word = plural_ru(n, "встреча", "встречи", "встреч")
+                self._meetings_stats_label.configure(
+                    text=f"В этой папке: {n} {word} • {_fmt_size(size)}",
+                )
+
+            try:
+                self.after(0, apply)
+            except tk.TclError:
+                pass  # dialog destroyed while the walk was running
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _on_pick_meetings_folder(self) -> None:
         """User clicked «Выбрать» — open native dir picker, maybe migrate."""
