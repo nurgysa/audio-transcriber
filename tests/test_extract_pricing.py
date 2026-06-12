@@ -78,6 +78,13 @@ def test_estimate_cost_unknown_model_falls_back_to_flat_rate():
     assert cost == pytest.approx(3.0 + 0.12 * 3.0)
 
 
+def test_estimate_cost_empty_slug_degrades_to_flat_rate():
+    # The hint re-estimates per keystroke while the user types a custom
+    # slug into the ComboBox — an empty/partial model must not error.
+    cost = estimate_cost(4_000_000, "")
+    assert cost == pytest.approx(3.0 + 0.12 * 3.0)
+
+
 def test_estimate_cost_hint_formats_model_rate():
     assert estimate_cost_hint(4_000_000, "google/gemini-3.5-flash") == (
         "Стоимость ≈ $2.58 (≈ 1,000,000 токенов)"
