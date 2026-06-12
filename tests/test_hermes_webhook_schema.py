@@ -9,7 +9,6 @@ import pytest
 
 from integrations.hermes.schema import build_audio_transcribed_event
 
-
 # ── 1. Required top-level fields ──────────────────────────────────────
 
 def test_required_top_level_fields_present():

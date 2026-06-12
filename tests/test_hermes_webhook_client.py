@@ -103,7 +103,7 @@ def test_serialize_payload_compact_separators():
 def test_serialize_payload_unicode_not_ascii_escaped():
     payload = {"t": "Привет"}
     body = serialize_payload(payload)
-    assert "Привет".encode("utf-8") in body
+    assert "Привет".encode() in body
 
 
 # ── 5. sign_body matches known HMAC-SHA256 ───────────────────────────
