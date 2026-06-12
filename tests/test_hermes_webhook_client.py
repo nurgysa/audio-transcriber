@@ -281,3 +281,129 @@ def test_emit_disabled_config_no_request():
         )
     mock_post.assert_not_called()
     assert result.sent is False
+
+
+# ── get_hermes_webhook_config (spec §9.3) ────────────────────────────
+
+from integrations.hermes.client import get_hermes_webhook_config  # noqa: E402
+
+
+def test_config_defaults_when_empty_dict():
+    """Missing config → disabled, defaults for all other fields."""
+    cfg = get_hermes_webhook_config({})
+    assert cfg.enabled is False
+    assert cfg.url == "http://localhost:8644/webhooks/audio-transcribed"
+    assert cfg.secret == ""
+    assert cfg.timeout_seconds == 10.0
+    assert cfg.routing_hint == "obsidian_inbox"
+
+
+def test_config_defaults_when_none():
+    """config=None treated same as {}."""
+    cfg = get_hermes_webhook_config(None)
+    assert cfg.enabled is False
+
+
+def test_config_file_values_honored():
+    """Values from the config dict are used when env is absent."""
+    cfg = get_hermes_webhook_config({
+        "hermes_webhook_enabled": True,
+        "hermes_webhook_url": "http://example.com/webhooks/audio-transcribed",
+        "hermes_webhook_secret": "mysecret",
+        "hermes_webhook_timeout_seconds": 30,
+        "hermes_webhook_routing_hint": "my_inbox",
+    })
+    assert cfg.enabled is True
+    assert cfg.url == "http://example.com/webhooks/audio-transcribed"
+    assert cfg.secret == "mysecret"
+    assert cfg.timeout_seconds == 30.0
+    assert cfg.routing_hint == "my_inbox"
+
+
+def test_env_overrides_config(monkeypatch):
+    """Env vars take precedence over config-file values."""
+    monkeypatch.setenv("AUDIO_TRANSCRIBER_HERMES_WEBHOOK_ENABLED", "true")
+    monkeypatch.setenv("AUDIO_TRANSCRIBER_HERMES_WEBHOOK_URL", "http://env-host/wh")
+    monkeypatch.setenv("AUDIO_TRANSCRIBER_HERMES_WEBHOOK_SECRET", "envsecret")
+    monkeypatch.setenv("AUDIO_TRANSCRIBER_HERMES_WEBHOOK_TIMEOUT_SECONDS", "7")
+    monkeypatch.setenv("AUDIO_TRANSCRIBER_HERMES_WEBHOOK_ROUTING_HINT", "telegram_inbox")
+
+    cfg = get_hermes_webhook_config({
+        "hermes_webhook_enabled": False,
+        "hermes_webhook_url": "http://config-host/wh",
+        "hermes_webhook_secret": "configsecret",
+        "hermes_webhook_timeout_seconds": 99,
+        "hermes_webhook_routing_hint": "config_inbox",
+    })
+
+    assert cfg.enabled is True
+    assert cfg.url == "http://env-host/wh"
+    assert cfg.secret == "envsecret"
+    assert cfg.timeout_seconds == 7.0
+    assert cfg.routing_hint == "telegram_inbox"
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("true", True),
+    ("True", True),
+    ("TRUE", True),
+    ("1", True),
+    ("yes", True),
+    ("YES", True),
+    ("on", True),
+    ("ON", True),
+    ("false", False),
+    ("False", False),
+    ("0", False),
+    ("no", False),
+    ("", False),
+    ("random", False),
+])
+def test_bool_parsing_via_env(monkeypatch, value, expected):
+    """All recognised bool strings parsed correctly via env override."""
+    monkeypatch.setenv("AUDIO_TRANSCRIBER_HERMES_WEBHOOK_ENABLED", value)
+    cfg = get_hermes_webhook_config({})
+    assert cfg.enabled is expected, f"bool({value!r}) should be {expected}"
+
+
+def test_real_bool_true_passthrough():
+    """A real Python True in config dict is accepted as-is."""
+    cfg = get_hermes_webhook_config({"hermes_webhook_enabled": True})
+    assert cfg.enabled is True
+
+
+def test_real_bool_false_passthrough():
+    """A real Python False in config dict is accepted as-is."""
+    cfg = get_hermes_webhook_config({"hermes_webhook_enabled": False})
+    assert cfg.enabled is False
+
+
+def test_bad_timeout_falls_back():
+    """Non-numeric timeout value falls back to 10.0."""
+    cfg = get_hermes_webhook_config({"hermes_webhook_timeout_seconds": "bogus"})
+    assert cfg.timeout_seconds == 10.0
+
+
+def test_zero_timeout_falls_back():
+    """Zero timeout falls back to 10.0 (non-positive guard)."""
+    cfg = get_hermes_webhook_config({"hermes_webhook_timeout_seconds": 0})
+    assert cfg.timeout_seconds == 10.0
+
+
+def test_negative_timeout_falls_back():
+    """Negative timeout falls back to 10.0."""
+    cfg = get_hermes_webhook_config({"hermes_webhook_timeout_seconds": -5})
+    assert cfg.timeout_seconds == 10.0
+
+
+def test_bad_timeout_env_falls_back(monkeypatch):
+    """Non-numeric env timeout also falls back."""
+    monkeypatch.setenv("AUDIO_TRANSCRIBER_HERMES_WEBHOOK_TIMEOUT_SECONDS", "notanumber")
+    cfg = get_hermes_webhook_config({})
+    assert cfg.timeout_seconds == 10.0
+
+
+def test_missing_config_disabled():
+    """Completely empty config → feature disabled (safe default)."""
+    cfg = get_hermes_webhook_config({})
+    assert cfg.enabled is False

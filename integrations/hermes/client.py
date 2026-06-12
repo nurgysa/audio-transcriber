@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 from dataclasses import dataclass
 
 import requests
@@ -194,3 +195,85 @@ def emit_audio_transcribed_event(
         protocol=protocol,
     )
     return post_event(payload, config)
+
+
+# ── Config resolution (spec §9.3) ────────────────────────────────────
+
+
+_ENV_PREFIX = "AUDIO_TRANSCRIBER_HERMES_WEBHOOK_"
+_DEFAULT_URL = "http://localhost:8644/webhooks/audio-transcribed"
+_DEFAULT_TIMEOUT = 10.0
+_DEFAULT_ROUTING_HINT = "obsidian_inbox"
+
+_BOOL_TRUE = frozenset(("true", "1", "yes", "on"))
+
+
+def _parse_bool(value: object) -> bool:
+    """Parse a config-file bool or env-var string to Python bool.
+
+    Accepts real JSON booleans (True/False) and case-insensitive strings
+    ("true", "1", "yes", "on" → True; everything else → False).
+    """
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in _BOOL_TRUE
+
+
+def _parse_timeout(value: object) -> float:
+    """Parse timeout; falls back to 10.0 on bad or non-positive values."""
+    try:
+        t = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return _DEFAULT_TIMEOUT
+    return t if t > 0 else _DEFAULT_TIMEOUT
+
+
+def get_hermes_webhook_config(config: dict | None = None) -> HermesWebhookConfig:
+    """Build a HermesWebhookConfig from config dict + env overrides (spec §9.3).
+
+    ``config=None`` is treated as ``{}`` — integrations stay independent of
+    cli.config; callers that have a config dict (CLI, UI) pass it in.
+
+    Env vars (``AUDIO_TRANSCRIBER_HERMES_WEBHOOK_*``) override config-file
+    values. The secret is consumed but never logged or returned in error text.
+    Never raises.
+    """
+    cfg: dict = config if config is not None else {}
+
+    def _env(suffix: str) -> str | None:
+        return os.environ.get(_ENV_PREFIX + suffix)
+
+    # ── enabled ──────────────────────────────────────────────────────
+    enabled_env = _env("ENABLED")
+    if enabled_env is not None:
+        enabled = _parse_bool(enabled_env)
+    else:
+        enabled = _parse_bool(cfg.get("hermes_webhook_enabled", False))
+
+    # ── url ───────────────────────────────────────────────────────────
+    url = _env("URL") or cfg.get("hermes_webhook_url") or _DEFAULT_URL
+
+    # ── secret ───────────────────────────────────────────────────────
+    secret = _env("SECRET") or cfg.get("hermes_webhook_secret") or ""
+
+    # ── timeout ───────────────────────────────────────────────────────
+    timeout_env = _env("TIMEOUT_SECONDS")
+    if timeout_env is not None:
+        timeout = _parse_timeout(timeout_env)
+    else:
+        timeout = _parse_timeout(cfg.get("hermes_webhook_timeout_seconds", _DEFAULT_TIMEOUT))
+
+    # ── routing_hint ─────────────────────────────────────────────────
+    routing_hint = (
+        _env("ROUTING_HINT")
+        or cfg.get("hermes_webhook_routing_hint")
+        or _DEFAULT_ROUTING_HINT
+    )
+
+    return HermesWebhookConfig(
+        enabled=enabled,
+        url=url,
+        secret=secret,
+        timeout_seconds=timeout,
+        routing_hint=routing_hint,
+    )
